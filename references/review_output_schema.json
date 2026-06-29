@@ -1,0 +1,83 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "findings", "overall_risk", "test_gaps", "limitations"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "Concise review summary in the same language as the prompt."
+    },
+    "overall_risk": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "none"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "category",
+          "title",
+          "file",
+          "line",
+          "body",
+          "risk",
+          "recommendation",
+          "confidence"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"]
+          },
+          "category": {
+            "type": "string",
+            "enum": ["bug", "security", "performance", "compatibility", "test", "maintainability", "architecture", "documentation"]
+          },
+          "title": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string",
+            "description": "Repository-relative or absolute file path."
+          },
+          "line": {
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "body": {
+            "type": "string",
+            "description": "What is wrong and why it matters."
+          },
+          "risk": {
+            "type": "string",
+            "description": "Likely user or system impact if unfixed."
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "Concrete defensive fix or validation step."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "test_gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
