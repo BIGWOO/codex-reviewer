@@ -1,83 +1,101 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex Reviewer v2 Output",
+  "description": "Structured code-review output compatible with Codex native review field names. Use with generic codex exec; Codex CLI 0.144.1 ignores --output-schema on exec review.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "findings", "overall_risk", "test_gaps", "limitations"],
+  "required": [
+    "findings",
+    "overall_correctness",
+    "overall_explanation",
+    "overall_confidence_score"
+  ],
   "properties": {
-    "summary": {
-      "type": "string",
-      "description": "Concise review summary in the same language as the prompt."
-    },
-    "overall_risk": {
-      "type": "string",
-      "enum": ["critical", "high", "medium", "low", "none"]
-    },
     "findings": {
       "type": "array",
+      "description": "All discrete, actionable issues introduced by the reviewed change. Return an empty array when none qualify.",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "severity",
-          "category",
           "title",
-          "file",
-          "line",
           "body",
-          "risk",
-          "recommendation",
-          "confidence"
+          "confidence_score",
+          "priority",
+          "code_location"
         ],
         "properties": {
-          "severity": {
-            "type": "string",
-            "enum": ["critical", "high", "medium", "low"]
-          },
-          "category": {
-            "type": "string",
-            "enum": ["bug", "security", "performance", "compatibility", "test", "maintainability", "architecture", "documentation"]
-          },
           "title": {
-            "type": "string"
-          },
-          "file": {
             "type": "string",
-            "description": "Repository-relative or absolute file path."
-          },
-          "line": {
-            "type": ["integer", "null"],
-            "minimum": 1
+            "maxLength": 80,
+            "description": "Imperative title prefixed with [P0], [P1], [P2], or [P3]."
           },
           "body": {
             "type": "string",
-            "description": "What is wrong and why it matters."
+            "description": "One concise Markdown paragraph explaining the defect, triggering conditions, and impact."
           },
-          "risk": {
-            "type": "string",
-            "description": "Likely user or system impact if unfixed."
-          },
-          "recommendation": {
-            "type": "string",
-            "description": "Concrete defensive fix or validation step."
-          },
-          "confidence": {
+          "confidence_score": {
             "type": "number",
             "minimum": 0,
             "maximum": 1
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3,
+            "description": "0=P0 blocking, 1=P1 urgent, 2=P2 normal, 3=P3 low."
+          },
+          "code_location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "absolute_file_path",
+              "line_range"
+            ],
+            "properties": {
+              "absolute_file_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "line_range": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "start",
+                  "end"
+                ],
+                "properties": {
+                  "start": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "end": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Inclusive end line. Keep the range minimal and ensure end is not before start."
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
-    "test_gaps": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "overall_correctness": {
+      "type": "string",
+      "enum": [
+        "patch is correct",
+        "patch is incorrect"
+      ]
     },
-    "limitations": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "overall_explanation": {
+      "type": "string",
+      "description": "One to three sentences explaining the correctness verdict."
+    },
+    "overall_confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
     }
   }
 }
