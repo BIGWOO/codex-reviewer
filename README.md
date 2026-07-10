@@ -1,84 +1,145 @@
 # Codex Reviewer Skill
 
-這是一個 Codex skill，用來透過 Codex CLI 啟動獨立、唯讀的程式碼審查器，適合做 PR/MR review、架構驗證、安全檢查、效能檢查，以及複雜實作完成後的第二意見。
+透過 OpenAI Codex CLI 啟動獨立、唯讀的 second-opinion reviewer。支援 Git branch/commit/uncommitted review、自訂 criteria、structured findings、模型 preset 與可稽核的 JSONL 執行結果。
 
-## 需求
+## Minimum Requirements
 
-- Codex CLI
-- Python 3
-- 已完成 Codex CLI 登入與本機設定
+- Codex CLI `0.144.1` 或更新的 stable version
+- Python 3.10+
+- Git
+- 已完成 Codex CLI 登入，且帳號可使用至少一個支援模型
 
-## 安裝
+本 skill 不會自動更新 Codex CLI，也不會修改使用者的 `$CODEX_HOME` config。
 
-將 repo clone 到全域 skills 目錄：
+## Install
+
+`~/.agents/skills` 是建議的單一來源：
 
 ```bash
-git clone https://github.com/BIGWOO/codex-reviewer.git ~/.agents/skills/codex-reviewer
+git clone https://github.com/BIGWOO/codex-reviewer.git \
+  ~/.agents/skills/codex-reviewer
 ```
 
-確認檔案存在：
+驗證 skill 與 runtime：
 
 ```bash
-ls ~/.agents/skills/codex-reviewer
+SKILL_DIR="$HOME/.agents/skills/codex-reviewer"
+python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
+  --result-json /tmp/codex-review-doctor.json
 ```
 
-## 使用情境
+## Binary Diagnostic
 
-當你需要獨立 code review 或第二意見時，可以要求 Codex 使用 `codex-reviewer` skill。這個 skill 預設使用唯讀沙箱，不會修改專案檔案。
-
-常見情境：
-
-- 審查目前 PR/MR diff
-- 審查未提交變更
-- 針對單一 commit range 做 review
-- 檢查安全、效能、架構風險
-- 對照規格與實作是否一致
-
-## Helper Script 範例
-
-審查目前分支相對於 `main` 的變更：
+機器上可能同時存在 npm、Homebrew 或舊版 binary。先確認實際執行者：
 
 ```bash
-python3 ~/.agents/skills/codex-reviewer/scripts/codex_review.py native-review \
+type -a codex
+command -v codex
+codex --version
+codex exec review --help
+```
+
+指定 binary：
+
+```bash
+python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
+  --codex-bin /absolute/path/to/codex \
+  --result-json /tmp/codex-review-doctor.json
+```
+
+也可設定：
+
+```bash
+export CODEX_REVIEWER_CODEX_BIN=/absolute/path/to/codex
+```
+
+`doctor` 不呼叫模型；它檢查 binary version、model catalog、Git 與 reviewer 所需能力。遇到 config 問題時再加 `--strict-config`。
+
+## Quick Start
+
+標準 branch review，使用 native Codex rubric：
+
+```bash
+python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
   --cd /path/to/repo \
   --base main \
-  --output /tmp/codex-review.jsonl \
-  --last-message-output /tmp/codex-review.md
+  --preset standard
 ```
 
-快速審查未提交變更：
+Structured deep review，使用 v2 schema：
 
 ```bash
-python3 ~/.agents/skills/codex-reviewer/scripts/codex_review.py native-review \
+python3 "$SKILL_DIR/scripts/codex_review.py" structured-review \
+  --cd /path/to/repo \
+  --base main \
+  --preset deep \
+  --result-json /tmp/codex-review-result.json
+```
+
+先檢查實際 command、不呼叫模型：
+
+```bash
+python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
   --cd /path/to/repo \
   --uncommitted \
-  --quick \
-  --output /tmp/codex-review.jsonl \
-  --last-message-output /tmp/codex-review.md
+  --preset quick \
+  --dry-run
 ```
 
-指定 commit range 做 focused review：
+## Modes
 
-```bash
-python3 ~/.agents/skills/codex-reviewer/scripts/codex_review.py custom \
-  "Review only the changes in commit range <base>..<head>. Focus on correctness, security, performance, compatibility, and missing tests. Return actionable findings with file paths and line numbers." \
-  --cd /path/to/repo \
-  --review-range <base>..<head> \
-  --quick \
-  --output /tmp/codex-review.jsonl \
-  --last-message-output /tmp/codex-review.md
-```
+| Mode | Use when |
+|---|---|
+| `native-review` | 精確的 `--base`、`--commit` 或 `--uncommitted` review |
+| `structured-review` | 需要 native-compatible structured findings |
+| `custom` / `focused` / `diff` | 自訂 criteria、任意 range 或特定檔案 |
+| `security` / `performance` / `architecture` / `quality` | Generic 專項 review |
+| `doctor` | Binary、version、catalog 或 Git diagnostic |
 
-## 主要內容
+Native review 在 Codex CLI 0.144.1 不會套用 output schema、images 或 live search，也不使用 Ultra subagents。Helper 會對不相容組合 fail fast；需要這些能力時使用 generic mode。
 
-- `SKILL.md`：skill 入口與工作流程
-- `scripts/codex_review.py`：Codex CLI review wrapper
-- `references/codex_cli_reference.md`：Codex CLI 審查參考
-- `references/example_prompts.md`：審查 prompt 範例
-- `references/review_output_schema.json`：結構化輸出 schema
+## Presets
 
-## 注意事項
+| Preset | Primary | Fallback | Typical use |
+|---|---|---|---|
+| `quick` | GPT-5.6 Terra medium | Sol medium，再 GPT-5.5 medium | 快速找阻塞問題 |
+| `standard` | GPT-5.6 Sol high | GPT-5.5 high | 預設日常 review |
+| `deep` | GPT-5.6 Sol max | GPT-5.5 xhigh | 複雜、高價值變更 |
+| `ultra` | GPT-5.6 Sol ultra | 無 | Generic、可平行拆解的明確 opt-in |
 
-- 這個 skill 的 review 流程預設使用 read-only sandbox。
-- 大型 diff 建議先切成單一 task 或 commit range，避免 review timeout。
-- 安全審查只應描述防禦性風險與修復建議，不要要求攻擊步驟或 payload。
+Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設帳號已開放 GPT-5.6。`--quick` 是 `--preset quick` 的 alias。
+
+## Useful Options
+
+- `--instructions <TEXT>`：加入 repo-specific review criteria。
+- `--profile <NAME>`：載入 `$CODEX_HOME/<NAME>.config.toml` V2 profile。
+- `--fast`：使用 catalog 提供的 Fast tier；增加 usage，只能 opt-in。
+- `--strict-config`：未知 config field 直接失敗，適合 diagnostic/CI。
+- `--result-json <FILE>`：額外寫入 `schema_version: 2` wrapper result envelope；不取代 stdout final text。
+- `--output <FILE>`：保存 raw stdout / JSONL。
+- `--last-message-output <FILE>`：保存 final reviewer message。
+- `--isolated`：隔離 user config/rules；只在受控環境使用。
+- `--allow-large-diff`：越過大型 diff guard；應先拆 task 或 module。
+
+Structured review 預設使用 [references/review_output_schema.json](references/review_output_schema.json)。Schema 採用 Codex native field names，但 enforcement 由 generic `codex exec --output-schema` 提供。
+
+## Review Contract
+
+- Read-only：不修改、commit、push、merge 或 deploy。
+- Findings-first：只回報 discrete、actionable、evidence-backed issues。
+- Scope-bound：避免 pre-existing、無關 refactor 與純風格噪音。
+- Defensive security：描述風險與修法，不產生 exploit walkthrough。
+- Independent verification：主 agent 必須重新核對高風險 finding，不能把 reviewer 當成最終裁決者。
+- Quick 只做 triage，不代表 quality gate 完成；交付前至少跑 `standard`，高風險變更跑 `deep`。
+- P0/P1 阻擋交付；P2 必須修正，或記錄理由後針對該範圍重跑 reviewer。
+
+## Files
+
+- `SKILL.md`：agent workflow、trigger 與 quality gate
+- `scripts/codex_review.py`：CLI wrapper
+- `references/codex_cli_reference.md`：0.144.1 capability matrix、V2 profile 與診斷
+- `references/example_prompts.md`：parameterized generic prompts
+- `references/review_output_schema.json`：v2 native-compatible schema
+- `agents/openai.yaml`：Codex UI metadata
+
+更完整的 CLI 行為與官方來源見 [references/codex_cli_reference.md](references/codex_cli_reference.md)。

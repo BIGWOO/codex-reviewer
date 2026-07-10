@@ -1,0 +1,7 @@
+interface:
+  display_name: "Codex Reviewer"
+  short_description: "使用 Codex CLI 進行獨立唯讀程式碼審查與第二意見"
+  default_prompt: "Use $codex-reviewer to independently review the current high-risk changes and return only evidence-backed, actionable findings."
+
+policy:
+  allow_implicit_invocation: true
