@@ -1,378 +1,267 @@
-# Codex CLI 程式碼審查參考手冊
+# Codex CLI Reviewer v2 參考
 
-本參考手冊提供使用 Codex CLI 進行程式碼審查的詳細資訊。
+本文件以 `codex-cli 0.144.1` 為基準，整理 reviewer 所需的模型、命令與已知邊界。執行前仍要以本機 `codex --version`、`codex exec review --help` 與 `codex debug models` 為準。
 
-## 指令參考
+## 目錄
 
-### 基本執行
+- [模式選擇矩陣](#模式選擇矩陣)
+- [模型與推理層級](#模型與推理層級)
+- [命令形狀](#命令形狀)
+- [Native review 邊界](#native-review-邊界)
+- [JSONL 與 structured output](#jsonl-與-structured-output)
+- [V2 profile](#v2-profile)
+- [安全與隔離](#安全與隔離)
+- [Context 與大型 diff](#context-與大型-diff)
+- [診斷](#診斷)
+- [官方來源](#官方來源)
+
+## 模式選擇矩陣
+
+| 需求 | Native `codex exec review` | Generic `codex exec` | 選擇 |
+|---|---:|---:|---|
+| 精確審查 base branch、commit、未提交變更 | 是 | 需在 prompt 定義 | Native |
+| Codex 內建 bug rubric 與 P0-P3 findings | 是 | 需自行提供 | Native |
+| 自訂審查 criteria 或檔案集合 | scope 不能再帶 custom prompt | 是 | Generic |
+| 任意 commit range | 無原生 range flag | 是 | Generic |
+| `--output-schema` 強制 final JSON | 0.144.1 會接受但忽略 | 是 | Generic |
+| 圖片輸入 | 0.144.1 會接受但忽略 | 是 | Generic |
+| Live web search | reviewer child 強制停用 | 是 | Generic |
+| Ultra / subagents | reviewer child 關閉 collaboration | 可依模型能力使用 | Generic only |
+| JSONL 進度與 usage | 是 | 是 | 兩者皆可 |
+| Ephemeral session | 是 | 是 | 預設啟用 |
+
+Native review 適合標準變更審查。Generic review 適合規格對照、架構、安全、圖片、搜尋或需要穩定 schema 的流程。
+
+## 模型與推理層級
+
+先查目前帳號與 CLI 的實際 catalog：
 
 ```bash
-codex exec "prompt text"
+codex debug models | jq '.models[] | {
+  slug,
+  default_reasoning_level,
+  supported_reasoning_levels,
+  context_window,
+  max_context_window,
+  effective_context_window_percent,
+  input_modalities,
+  supports_search_tool,
+  additional_speed_tiers
+}'
 ```
 
-非互動模式，用於單次審查和分析。
+`codex-cli 0.144.1` 的 catalog：
 
-### 模型選擇
+| Model | Reviewer 定位 | Reasoning | CLI context |
+|---|---|---|---:|
+| `gpt-5.6-sol` | 複雜、高價值 review | `low` 到 `max`，另有 `ultra` | 372,000 |
+| `gpt-5.6-terra` | 日常或 quick review | `low` 到 `max`，另有 `ultra` | 372,000 |
+| `gpt-5.6-luna` | 明確、重複、低成本工作 | `low` 到 `max` | 372,000 |
+| `gpt-5.5` | 5.6 不可用時 fallback | `low` 到 `xhigh` | 依 catalog |
+
+Reviewer 建議：
+
+- Quick：`gpt-5.6-terra` + `medium`。
+- Standard：`gpt-5.6-sol` + `high`。
+- Deep：`gpt-5.6-sol` + `max`。
+- Ultra：只在 generic review、明確可平行拆解且使用者接受額外 usage 時啟用。
+
+推理設定的正確 key 是 `model_reasoning_effort`：
 
 ```bash
-codex exec --model gpt-5.5 --sandbox read-only --config reasoning_effort=high "prompt"
+-c 'model_reasoning_effort="high"'
 ```
 
-**程式碼審查建議使用的模型：**
-- `gpt-5.5`：此 Skill 的預設模型，適合大型 PR、跨檔案 review、規格驗證
-- 除非用戶明確指定其他模型，本 Skill 的所有 Codex CLI 範例與腳本預設都應固定使用 `gpt-5.5`
+不要使用舊的 `reasoning_effort`。不要依賴 model default；官方頁面與特定 CLI catalog 可能有 rollout 差異。
 
-OpenAI 在 2026 年 4 月 23 日發布的 GPT-5.5 官方文章指出，GPT-5.5 在 Codex 中提供長上下文能力。實際可用上限以本機 `codex debug models` 的 model catalog 為準；此 Skill 的 helper script 會自動 clamp `model_context_window`，避免使用本機 CLI 不支援的值。來源：<https://openai.com/index/introducing-gpt-5-5/>
+## 命令形狀
 
-**建議模式：**
-- 標準 review：`gpt-5.5` + `reasoning_effort=high`
-- 長上下文 review：使用 helper 的 `--long-context`，由 `codex debug models` 動態決定 `model_context_window`，`model_auto_compact_token_limit` 預設約為 context window 的 80%
-- 只有大型 PR、跨模組變更、規格對照實作時才建議開長上下文；小型 review 使用標準模式即可
-
-### 沙箱模式
-
-控制檔案和網路存取權限：
+### Native branch review
 
 ```bash
-codex exec --sandbox read-only "prompt"          # 本 Skill 的審查預設：僅讀取檔案
-```
-
-`workspace-write`、`danger-full-access`、`--full-auto` 只適合實作或修復任務，不適合此 reviewer skill。審查流程應保持唯讀，避免 Codex 在第二意見階段修改工作區。
-
-### 輸出控制
-
-```bash
-codex exec "prompt"                               # 串流至 stderr，最終訊息至 stdout
-codex exec -o output.txt "prompt"                 # 將最終訊息寫入檔案
-codex exec --json "prompt"                        # 輸出 JSONL 事件串流
-codex exec --json "prompt" > review.jsonl         # 儲存 JSONL 至檔案
-```
-
-### 核准策略
-
-```bash
-codex exec --config approval_policy=untrusted "prompt"  # 對不信任的指令提示確認
-codex exec --config approval_policy=on-request "prompt" # 需要時提示確認
-codex exec --config approval_policy=never "prompt"      # 永不提示（唯讀安全）
-```
-
-### 推理設定
-
-```bash
-codex exec --config reasoning_effort=low "prompt"     # 快速，較不深入
-codex exec --config reasoning_effort=medium "prompt"  # 平衡模式
-codex exec --config reasoning_effort=high "prompt"    # 深度分析，較慢
-```
-
-### 長上下文設定
-
-```bash
-codex exec --model gpt-5.5 \
+codex --ask-for-approval never \
+  --model gpt-5.6-sol \
   --sandbox read-only \
-  --config reasoning_effort=high \
-  --config model_context_window=<from codex debug models> \
-  --config model_auto_compact_token_limit=<about 80% of context window> \
-  "prompt"
+  -c 'model_reasoning_effort="high"' \
+  exec review \
+  --ephemeral \
+  --json \
+  --base main
 ```
 
-- `model_context_window`：以 `codex debug models` 中該模型的 `max_context_window` 或 `context_window` 為上限
-- `model_auto_compact_token_limit`：接近上限前讓 Codex 自動 compact 對話脈絡，helper 預設使用約 80%
-- 適合大型 PR、跨模組 review、規格對照實作
+Native scope 必須四選一：
 
-### 原生 code review 指令
+- `--base <BRANCH>`
+- `--commit <SHA>`，可搭配 `--title <TITLE>`
+- `--uncommitted`
+- custom positional prompt
 
-Codex CLI 0.124.0 提供內建 review flow，適合一般 PR、commit、未提交變更審查：
+`--base`、`--commit`、`--uncommitted` 與 custom prompt 彼此互斥。`--uncommitted` 包含 staged、unstaged 與 untracked files。
+
+### Generic structured review
 
 ```bash
-codex --model gpt-5.5 --sandbox read-only --config reasoning_effort=high \
-  exec review --base main --json --ephemeral
-```
-
-常用選項：
-- `--base <BRANCH>`：審查目前分支相對於指定 base branch 的變更
-- `--commit <SHA>`：審查單一 commit
-- `--uncommitted`：審查 staged、unstaged、untracked changes
-- `--title <TITLE>`：在 review 摘要顯示標題
-- `--output-last-message <FILE>`：將最終 review 訊息寫入檔案
-- `--ephemeral`：不保存 session，適合一次性 reviewer
-- `--ignore-user-config` / `--ignore-rules`：隔離本機設定與 exec rules，適合可重現審查
-
-需要 `--output-schema`、圖片、跨 repo 額外目錄或自訂 structured findings 時，使用 generic `codex exec` prompt 或 `scripts/codex_review.py diff/custom`。
-
-## 審查專用模式
-
-### 安全審查
-
-```bash
-codex exec --model gpt-5.5 --sandbox read-only --config reasoning_effort=high "Perform a security audit of [file/directory]. Check for:
-- Authentication and authorization issues
-- Input validation vulnerabilities (SQL injection, XSS, etc.)
-- Cryptographic weaknesses
-- Sensitive data exposure
-- Rate limiting and DoS concerns
-Provide severity ratings and specific line numbers."
-```
-
-### 效能審查
-
-```bash
-codex exec --model gpt-5.5 --sandbox read-only --config reasoning_effort=high "Analyze [file/directory] for performance issues:
-- Inefficient algorithms and data structures
-- N+1 query problems
-- Memory leaks or excessive allocations
-- Blocking operations that should be async
-- Database query optimization opportunities
-Suggest specific improvements with code examples."
-```
-
-### 架構審查
-
-```bash
-codex exec --model gpt-5.5 --sandbox read-only --config reasoning_effort=high "Review the architecture in [directory]:
-- Evaluate separation of concerns
-- Identify tight coupling issues
-- Check adherence to design patterns
-- Assess scalability concerns
-- Suggest refactoring opportunities
-Compare current design with best practices for [framework/technology]."
-```
-
-### 程式碼品質審查
-
-```bash
-codex exec --model gpt-5.5 --sandbox read-only --config reasoning_effort=high "Review [files] for code quality:
-- Complexity metrics (functions that are too long/complex)
-- Code duplication and DRY violations
-- Naming conventions and clarity
-- Error handling completeness
-- Test coverage gaps
-Focus on maintainability and readability."
-```
-
-### Diff/PR 審查
-
-```bash
-codex exec --model gpt-5.5 --sandbox read-only --config reasoning_effort=high "Review the git diff between [branch1] and [branch2]:
-- Identify breaking changes
-- Check for regression risks
-- Evaluate test coverage for changes
-- Verify documentation updates
-- Assess backward compatibility
-Provide feedback organized by file and severity."
-```
-
-## JSONL 事件格式
-
-使用 `--json` 參數時，Codex 會輸出 JSONL 事件：
-
-### 事件類型
-
-**thread.started**
-```json
-{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}
-```
-
-**turn.started**
-```json
-{"type":"turn.started"}
-```
-
-**item.completed**（推理）
-```json
-{
-  "type":"item.completed",
-  "item":{
-    "id":"item_0",
-    "type":"reasoning",
-    "text":"**Analysis of authentication flow**"
-  }
-}
-```
-
-**item.completed**（指令執行）
-```json
-{
-  "type":"item.completed",
-  "item":{
-    "id":"item_1",
-    "type":"command_execution",
-    "command":"bash -lc 'grep -r TODO src/'",
-    "aggregated_output":"...",
-    "exit_code":0,
-    "status":"completed"
-  }
-}
-```
-
-**item.completed**（代理訊息）
-```json
-{
-  "type":"item.completed",
-  "item":{
-    "id":"item_2",
-    "type":"agent_message",
-    "text":"Review complete. Found 3 critical issues..."
-  }
-}
-```
-
-**turn.completed**
-```json
-{
-  "type":"turn.completed",
-  "usage":{
-    "prompt_tokens":1250,
-    "completion_tokens":850,
-    "total_tokens":2100
-  }
-}
-```
-
-## 結構化 findings schema
-
-需要穩定後處理時，使用此 Skill 內建 schema：
-
-```bash
-codex exec --model gpt-5.5 \
+codex --ask-for-approval never \
+  --model gpt-5.6-sol \
   --sandbox read-only \
-  --config reasoning_effort=high \
-  --output-schema /Users/bigwoo/.agents/skills/codex-reviewer/references/review_output_schema.json \
-  "Review the current pull request diff against main. Return concise findings."
+  -c 'model_reasoning_effort="high"' \
+  exec \
+  --ephemeral \
+  --json \
+  --output-schema "$HOME/.agents/skills/codex-reviewer/references/review_output_schema.json" \
+  --output-last-message /tmp/codex-review.json \
+  - < /tmp/review-prompt.md
 ```
 
-schema 會要求 Codex 回傳 `summary`、`overall_risk`、`findings`、`test_gaps`、`limitations`。每個 finding 需包含嚴重度、類別、檔案、行號、風險、修復建議與信心度。
+把大型或含敏感內容的 prompt 走 stdin，不要把完整 prompt 放入 process list 或 diagnostic command output。
 
-## 環境變數
+### Live search 與圖片
+
+Live search 是 root-level flag：
 
 ```bash
-CODEX_API_KEY=sk-...        # 覆寫 API key（僅限 codex exec）
-RUST_LOG=info               # 控制日誌層級
+codex --search exec ...
 ```
 
-## 設定檔
+圖片使用 generic exec：
 
-Codex 從 `~/.config/codex/config.toml` 或專案專屬的 `.codex/config.toml` 讀取設定
+```bash
+codex exec --image=/absolute/path/evidence.png ...
+```
 
-**程式碼審查設定範例：**
+Search 與圖片都不得用來繞過 scope；只有當 review 真正需要現行外部事實或視覺證據時才啟用。
+
+## Native review 邊界
+
+`codex-cli 0.144.1` 的 native reviewer 會建立 child review session，套用內建 rubric、強制 `approval_policy=never`，並關閉 web search、Collab 與 MultiAgentV2。
+
+CLI help 會在 `codex exec review` 顯示 `--output-schema`，exec parser 也會接受 image flag；但 0.144.1 的 Review branch 不載入 `output_schema_path`，也不把 images 組進 review input。文件與 wrapper 應以實作行為為準，而不是只看 parser 是否接受。
+
+內部 reviewer 會產生 `ReviewOutputEvent`，但 exec JSONL 的簡化 mapper 不暴露 `ExitedReviewMode.review_output`。CLI 使用者拿到的是渲染後的 agent message，不是 raw native struct。
+
+因此：
+
+- Native review 不要宣稱支援 schema、image、search 或 Ultra。
+- 需要上述能力時切換 generic review。
+- Native deep review 使用 Sol + `max`；不要用 Ultra。
+
+## JSONL 與 structured output
+
+`--json` 會把 stdout 轉為 JSONL event stream。常見事件：
+
+- `thread.started`
+- `turn.started`
+- `item.started`
+- `item.updated`
+- `item.completed`
+- `turn.completed`
+- `turn.failed`
+- `error`
+
+`turn.completed.usage` 使用以下欄位：
+
+```json
+{
+  "input_tokens": 24763,
+  "cached_input_tokens": 24448,
+  "output_tokens": 122,
+  "reasoning_output_tokens": 0
+}
+```
+
+只需要 final message 時使用 `-o` / `--output-last-message`。需要穩定 JSON 時，generic exec 同時使用：
+
+- `--json`：保留事件、錯誤與 usage。
+- `--output-schema <FILE>`：限制 final response shape。
+- `--output-last-message <FILE>`：直接取得 final JSON。
+
+`references/review_output_schema.json` 採用 native-compatible field names，但只保證 generic `codex exec` 的 schema enforcement。
+
+Helper 的 `--result-json <FILE>` 另外寫入 v2 execution envelope，不取代 stdout final message。Envelope 包含選定的 absolute binary/version、scope 與 sizing metrics、model/effort/Fast tier、usage、timeout/timed-out、warnings、sanitized command、final result、exit code 與 error；stdin prompt 不會寫入 envelope。`--output` 仍只保存 raw Codex stdout/JSONL。
+
+## V2 profile
+
+目前 `--profile reviewer` 讀取的是 V2 profile file：
+
+```text
+$CODEX_HOME/reviewer.config.toml
+```
+
+不是舊式 `[profiles.reviewer]` table。範例：
 
 ```toml
-model = "gpt-5.5"
-reasoning_effort = "high"
-
-[profiles.security_review]
-model = "gpt-5.5"
-reasoning_effort = "high"
-approval_policy = "never"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+model_verbosity = "low"
 sandbox_mode = "read-only"
-
-[profiles.pr_review]
-model = "gpt-5.5"
-reasoning_effort = "high"
 approval_policy = "never"
-sandbox_mode = "read-only"
-
-[profiles.long_context_review]
-model = "gpt-5.5"
-reasoning_effort = "high"
-approval_policy = "never"
-sandbox_mode = "read-only"
-# 以 `codex debug models` 回報的本機 model catalog 為準；不要硬套超出上限的值。
-# model_context_window = 272000
-# model_auto_compact_token_limit = 217600
+web_search = "disabled"
 ```
 
-使用設定檔：
-```bash
-codex exec -c profile=security_review "Audit authentication code"
-codex exec -c profile=long_context_review "Review the current pull request diff against main"
-```
-
-## 認證方式
-
-### ChatGPT 帳號（建議）
-```bash
-codex  # 首次執行會提示認證
-```
-選擇「Sign in with ChatGPT」並完成瀏覽器流程。
-
-### API Key
-```bash
-export CODEX_API_KEY=your-api-key
-codex exec "review code"
-```
-
-或在設定檔中設定：
-```toml
-[auth]
-api_key = "your-api-key"
-```
-
-## 程式碼審查最佳實踐
-
-### 1. 適當限定審查範圍
-- 單一檔案：`codex exec "Review auth.py for security issues"`
-- 目錄：`codex exec "Review src/api/ for REST API best practices"`
-- 特定問題：`codex exec "Check database.py for SQL injection vulnerabilities"`
-
-### 2. 提供脈絡
-```bash
-codex exec "Review payment.py. This is a Django app using Stripe API.
-Focus on: PCI compliance, error handling, idempotency, and webhook security."
-```
-
-### 3. 要求結構化輸出
-```bash
-codex exec "Review code and format findings as:
-## Critical Issues
-- [Issue with line numbers and explanation]
-
-## Medium Priority
-- [Issue with line numbers and explanation]
-
-## Suggestions
-- [Improvement ideas]"
-```
-
-### 4. 使用多次焦點審查
-與其進行一次廣泛審查，不如執行多次針對性審查：
+使用：
 
 ```bash
-codex exec "Security audit of authentication system"
-codex exec "Performance analysis of database queries"
-codex exec "Test coverage assessment"
+codex --profile reviewer exec "Review the current changes"
 ```
 
-### 5. 評估測試
+設定優先序由高到低：
+
+1. CLI flags 與 `-c` overrides
+2. Trusted project 的 `.codex/config.toml`
+3. `$CODEX_HOME/<name>.config.toml`
+4. `$CODEX_HOME/config.toml`
+5. System config
+6. Built-in defaults
+
+Profile 適合個人預設；公開 skill 不應擅自建立或覆寫使用者的 `$CODEX_HOME/*.config.toml`。
+
+## 安全與隔離
+
+- Reviewer 固定 `read-only`，只產生意見，不套 patch。
+- Non-interactive review 明確傳入 `--ask-for-approval never`，避免無人值守時卡在 prompt。
+- 預設 `--ephemeral`，避免一次性 second opinion 汙染 session history。
+- `--ignore-user-config` 可做 deterministic run，auth 仍使用 `CODEX_HOME`；但可能移除必要 provider 或 MCP 設定。
+- `--ignore-rules` 會略過 user/project execpolicy，除非受控 CI 明確需要，否則不要預設啟用。
+- 禁止 `--dangerously-bypass-approvals-and-sandbox`、`--full-auto`、`workspace-write` 與 `danger-full-access`。
+
+## Context 與大型 diff
+
+GPT-5.6 API model page列出 1.05M context，但本機 Codex catalog 對 5.6 models 配置 372K、effective 95%。Reviewer 以 CLI catalog 為 source of truth；不要把 API 上限硬寫進 `model_context_window`。
+
+GPT-5.6 request 超過 272K input tokens 會套用 long-context 計價。大型 review 應先：
+
+1. 固定 merge base 或 commit range。
+2. 計算 staged、unstaged、untracked 的檔案與行數。
+3. 按 task、模組或風險面拆分。
+4. 先 quick review，再對高風險範圍做 deep review。
+
+## 診斷
+
 ```bash
-codex exec --model gpt-5.5 --sandbox read-only --config reasoning_effort=high "Review auth.py and the related tests. Identify missing security test cases, brittle assertions, and untested edge cases. Do not modify files."
+command -v codex
+codex --version
+codex exec review --help
+codex doctor --json
+codex debug models
+codex debug models --bundled
+codex features list
 ```
 
-## 限制與解決方案
+- `--strict-config`：遇到設定漂移時用來找出未知欄位；不必每次強制，否則較新 project config 可能阻斷 review。
+- `codex doctor --json`：輸出已遮蔽的 installation、auth、config 與 runtime health report。
+- `codex debug models`：refresh account-aware catalog；`--bundled` 只看 binary 內建 catalog。
+- `codex debug prompt-input`：experimental，適合檢查 model-visible instruction layers。
+- `-c 'service_tier="fast"'`：catalog 有 Fast tier 時降低 latency，但增加 usage，只能 opt-in。
 
-### 大型程式碼庫
-**問題**：大型檔案/目錄受限於上下文視窗
-**解決方案**：分段審查、聚焦於變更的檔案，或使用目錄層級審查
+## 官方來源
 
-### 無法互動澄清
-**問題**：codex exec 是非互動式的
-**解決方案**：預先考慮問題並提供詳細的提示
-
-### 網路存取
-**問題**：預設沙箱會封鎖網路存取
-**解決方案**：此 reviewer skill 不應為了審查開啟寫入或完整系統存取。若需要外部文件，先由主代理取得必要摘錄或連結，再把脈絡放進 prompt。
-
-### 狀態持久化
-**問題**：每次 `codex exec` 呼叫都是獨立的
-**解決方案**：使用 `resume --last` 對相同脈絡進行後續追問
-
-## codex exec 與互動式 codex 比較
-
-| 功能 | `codex exec` | 互動式 `codex` |
-|------|-------------|----------------|
-| 使用情境 | 自動化審查、CI/CD | 配對程式設計 |
-| 互動方式 | 單次執行 | 多輪對話 |
-| 核准機制 | 可設定 | 互動式提示 |
-| 輸出格式 | 結構化（JSONL） | TUI 顯示 |
-| 腳本整合 | 容易 | 困難 |
-
-進行程式碼審查時，通常建議使用 `codex exec`，因為它具有自動化能力和結構化輸出。
+- [Codex Models](https://developers.openai.com/codex/models/)
+- [Codex CLI Reference](https://developers.openai.com/codex/cli/reference/)
+- [Non-interactive Mode](https://learn.chatgpt.com/docs/non-interactive-mode)
+- [Configuration Reference](https://developers.openai.com/codex/config-reference/)
+- [Config Basics](https://learn.chatgpt.com/docs/config-file/config-basic)
+- [Code Review](https://learn.chatgpt.com/docs/code-review)
+- [GPT-5.6 Sol model](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- [0.144.1 review task source](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/core/src/tasks/review.rs)
+- [0.144.1 exec routing source](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/exec/src/lib.rs)
+- [0.144.1 native rubric](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/prompts/templates/review/rubric.md)
