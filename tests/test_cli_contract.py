@@ -34,6 +34,8 @@ class CliContractTests(unittest.TestCase):
             "--fast",
             "--dry-run",
             "--result-json",
+            "--no-update-check",
+            "--force-update-check",
         ):
             self.assertIn(token, result.stdout)
 
@@ -126,6 +128,8 @@ class CliContractTests(unittest.TestCase):
             "sanitized_command",
             "final_result",
             "error",
+            "install_method",
+            "update",
         ):
             self.assertIn(key, envelope)
         self.assertEqual(envelope["binary"], str(binary.resolve()))

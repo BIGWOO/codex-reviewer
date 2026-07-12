@@ -52,11 +52,51 @@ class CodexBinaryTests(unittest.TestCase):
             path = os.pathsep.join(
                 [str(old.parent), str(alpha.parent), str(stable.parent), python_dir]
             )
-            with mock.patch.dict(os.environ, {"PATH": path}, clear=False):
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "PATH": path,
+                    "HOME": str(root / "home"),
+                    "CODEX_HOME": str(root / "home" / ".codex"),
+                    "CODEX_INSTALL_DIR": str(root / "home" / ".local" / "bin"),
+                },
+                clear=False,
+            ):
                 resolved = CodexBinary.discover()
 
         self.assertEqual(Path(resolved.path or "").resolve(), stable.resolve())
         self.assertEqual(resolved.version, (0, 144, 1))
+
+    def test_npm_install_wins_over_newer_standalone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            npm_binary = make_fake_codex(
+                root / "node_modules" / "@openai" / "codex", "0.144.1"
+            )
+            standalone = make_fake_codex(
+                root / ".codex" / "packages" / "standalone" / "releases" / "0.145.0",
+                "0.145.0",
+            )
+            python_dir = str(
+                Path(shutil.which("python3") or sys.executable).resolve().parent
+            )
+            path = os.pathsep.join(
+                [str(standalone.parent), str(npm_binary.parent), python_dir]
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "PATH": path,
+                    "HOME": str(root / "home"),
+                    "CODEX_HOME": str(root / "home" / ".codex-empty"),
+                    "CODEX_INSTALL_DIR": str(root / "home" / ".local" / "bin"),
+                },
+                clear=False,
+            ):
+                resolved = CodexBinary.discover()
+
+        self.assertEqual(Path(resolved.path or "").resolve(), npm_binary.resolve())
+        self.assertEqual(resolved.install_method, "npm")
 
     def test_flag_precedes_environment_and_environment_precedes_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

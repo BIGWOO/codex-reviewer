@@ -45,6 +45,7 @@ jobs:
       - run: codex --version | grep '0.144.1'
       - run: codex exec --help > /dev/null
       - run: codex exec review --help > /dev/null
+      - run: codex update --help > /dev/null
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |
@@ -72,6 +73,7 @@ jobs:
       - run: codex --version
       - run: codex exec --help > /dev/null
       - run: codex exec review --help > /dev/null
+      - run: codex update --help > /dev/null
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |

@@ -110,6 +110,18 @@ def main() -> int:
         print(f"codex-cli {_read_text('.fake_version', '0.144.1')}")
         return 0
 
+    if args == ["update"]:
+        _append_log(None)
+        target = os.environ.get("FAKE_CODEX_UPDATE_VERSION")
+        if target:
+            _sidecar(".fake_version").write_text(target, encoding="utf-8")
+        exit_code = int(os.environ.get("FAKE_CODEX_UPDATE_EXIT", "0"))
+        if exit_code:
+            print("fake update failed", file=sys.stderr)
+            return exit_code
+        print("fake update completed")
+        return 0
+
     if (
         "debug" in args
         and args.index("debug") + 1 < len(args)
