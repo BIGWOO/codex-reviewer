@@ -51,6 +51,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--codex-bin",
         help="Explicit Codex CLI binary; overrides CODEX_REVIEWER_CODEX_BIN and PATH.",
     )
+    update_group = parser.add_mutually_exclusive_group()
+    update_group.add_argument(
+        "--no-update-check",
+        action="store_true",
+        help="Skip the automatic Codex install/update check for this run.",
+    )
+    update_group.add_argument(
+        "--force-update-check",
+        action="store_true",
+        help="Ignore the update cache and run the install-source-aware update now.",
+    )
     parser.add_argument(
         "--preset",
         choices=PRESET_NAMES,
@@ -305,6 +316,8 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         strict_config=args.strict_config,
         fast=args.fast,
         dry_run=args.dry_run,
+        update_check=not args.no_update_check,
+        force_update_check=args.force_update_check,
     )
 
 
@@ -331,6 +344,8 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
             cwd=args.cwd,
             strict_config=args.strict_config,
             profile=args.profile,
+            update_check=not args.no_update_check,
+            force_update_check=args.force_update_check,
         )
         return result
 

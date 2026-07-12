@@ -31,6 +31,7 @@ from .scope import (
     developer_git_environment,
     large_diff_error,
 )
+from .updates import prepare_codex_binary
 
 
 DEFAULT_MODEL = "gpt-5.6-sol"
@@ -51,7 +52,8 @@ def _version_failure(binary: CodexBinary) -> str:
     minimum = format_version(MIN_CODEX_VERSION)
     return (
         f"Codex CLI {minimum}+ is required. Selected path: {path}; reported version: {actual}. "
-        f"Update with: npm install --global @openai/codex@{minimum}"
+        "Run the selected binary's `codex update`, or rerun without an explicit "
+        "--codex-bin so Codex Reviewer can repair the detected installation source."
     )
 
 
@@ -195,6 +197,8 @@ class CodexReviewer:
         strict_config: bool = False,
         fast: bool = False,
         dry_run: bool = False,
+        update_check: bool = True,
+        force_update_check: bool = False,
     ):
         self.explicit_model = model
         self.explicit_effort = reasoning_effort
@@ -230,11 +234,20 @@ class CodexReviewer:
         self.strict_config = strict_config
         self.fast = fast
         self.dry_run = dry_run
-        self.binary = CodexBinary.discover(codex_bin)
+        self.binary, self.update_outcome = prepare_codex_binary(
+            codex_bin,
+            check_updates=update_check,
+            force_update=force_update_check,
+        )
         self.catalog: Optional[ModelCatalog] = None
         self.selection: Optional[ModelSelection] = None
-        self._base_warnings: List[str] = []
+        self._base_warnings: List[str] = list(self.update_outcome.warnings)
         self.git_path: Optional[str] = None
+
+    def _with_runtime(self, result: Dict[str, object]) -> Dict[str, object]:
+        result["install_method"] = self.binary.install_method
+        result["update"] = self.update_outcome.to_dict()
+        return result
 
     def _prepare(
         self, *, native: bool, effort_override: Optional[str] = None
@@ -474,20 +487,22 @@ class CodexReviewer:
         for warning in warnings:
             print(f"[codex-review] warning: {warning}", file=sys.stderr, flush=True)
         if self.dry_run:
-            return ReviewResult(
-                success=True,
-                mode=mode,
-                binary=self.binary.path,
-                version=self.binary.version_string,
-                scope=scope_payload,
-                model=self.selection.model,
-                effort=self.selection.effort,
-                timeout=self.timeout,
-                service_tier="fast" if self.fast else None,
-                warnings=list(warnings),
-                command=spec.display_command,
-                final=f"Dry run: {spec.display_command}",
-            ).to_dict()
+            return self._with_runtime(
+                ReviewResult(
+                    success=True,
+                    mode=mode,
+                    binary=self.binary.path,
+                    version=self.binary.version_string,
+                    scope=scope_payload,
+                    model=self.selection.model,
+                    effort=self.selection.effort,
+                    timeout=self.timeout,
+                    service_tier="fast" if self.fast else None,
+                    warnings=list(warnings),
+                    command=spec.display_command,
+                    final=f"Dry run: {spec.display_command}",
+                ).to_dict()
+            )
 
         runner = CodexProcessRunner(
             self.binary,
@@ -508,6 +523,7 @@ class CodexReviewer:
             service_tier="fast" if self.fast else None,
             warnings=warnings,
         )
+        result = self._with_runtime(result)
         if structured and result.get("success"):
             final = result.get("final_result")
             if not isinstance(final, str) or not final.strip():
@@ -532,19 +548,21 @@ class CodexReviewer:
         self, mode: str, message: str, scope: Optional[ReviewScope] = None
     ) -> Dict[str, object]:
         selection = self.selection
-        return ReviewResult(
-            success=False,
-            mode=mode,
-            binary=self.binary.path,
-            version=self.binary.version_string,
-            scope=scope.to_dict() if scope else None,
-            model=selection.model if selection else self.explicit_model,
-            effort=selection.effort if selection else self.explicit_effort,
-            timeout=self.timeout,
-            service_tier="fast" if self.fast else None,
-            warnings=list(self._base_warnings),
-            error=message,
-        ).to_dict()
+        return self._with_runtime(
+            ReviewResult(
+                success=False,
+                mode=mode,
+                binary=self.binary.path,
+                version=self.binary.version_string,
+                scope=scope.to_dict() if scope else None,
+                model=selection.model if selection else self.explicit_model,
+                effort=selection.effort if selection else self.explicit_effort,
+                timeout=self.timeout,
+                service_tier="fast" if self.fast else None,
+                warnings=list(self._base_warnings),
+                error=message,
+            ).to_dict()
+        )
 
     def native_review(
         self,
@@ -746,15 +764,29 @@ def run_doctor(
     cwd: Optional[str] = None,
     strict_config: bool = False,
     profile: Optional[str] = None,
+    update_check: bool = True,
+    force_update_check: bool = False,
 ) -> Dict[str, object]:
     """Run explicit, non-inference health checks with the same selected binary."""
-    binary = CodexBinary.discover(codex_bin)
+    binary, update_outcome = prepare_codex_binary(
+        codex_bin,
+        check_updates=update_check,
+        force_update=force_update_check,
+    )
     root = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
     checks: List[Dict[str, object]] = []
-    warnings: List[str] = []
+    warnings: List[str] = list(update_outcome.warnings)
 
     def add(name: str, status: str, detail: object) -> None:
         checks.append({"name": name, "status": status, "detail": detail})
+
+    update_status = "warn" if update_outcome.error else "pass"
+    if (
+        not update_outcome.enabled
+        or update_outcome.skipped_reason == "explicit binary override"
+    ):
+        update_status = "skip"
+    add("update", update_status, update_outcome.to_dict())
 
     candidates = []
     for path in CodexBinary._path_candidates("codex"):
@@ -763,6 +795,7 @@ def run_doctor(
             {
                 "path": inspected.path,
                 "version": inspected.version_text,
+                "install_method": inspected.install_method,
                 "error": inspected.error,
             }
         )
@@ -783,7 +816,15 @@ def run_doctor(
     elif not binary.supported:
         add("binary", "fail", _version_failure(binary))
     else:
-        add("binary", "pass", {"path": binary.path, "version": binary.version_text})
+        add(
+            "binary",
+            "pass",
+            {
+                "path": binary.path,
+                "version": binary.version_text,
+                "install_method": binary.install_method,
+            },
+        )
         if binary.version and binary.version > VERIFIED_CODEX_VERSION:
             warnings.append(
                 f"Codex CLI {binary.version_text} is newer than verified {format_version(VERIFIED_CODEX_VERSION)}"
@@ -1013,5 +1054,7 @@ def run_doctor(
         final=final,
         error=f"Doctor found {len(failed)} failing checks" if failed else None,
     ).to_dict()
+    result["install_method"] = binary.install_method
+    result["update"] = update_outcome.to_dict()
     result["diagnostics"] = checks
     return result

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,9 @@ CODEX_BIN_ENV = "CODEX_REVIEWER_CODEX_BIN"
 MIN_CODEX_VERSION = (0, 144, 1)
 DEFAULT_PRESET = "standard"
 PRESET_NAMES = ("quick", "standard", "deep", "ultra")
+INSTALL_NPM = "npm"
+INSTALL_STANDALONE = "standalone"
+INSTALL_OTHER = "other"
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,7 @@ class CodexBinary:
     version_text: Optional[str] = None
     version: Optional[Tuple[int, int, int]] = None
     prerelease: Optional[str] = None
+    install_method: str = INSTALL_OTHER
     error: Optional[str] = None
 
     @classmethod
@@ -94,15 +99,25 @@ class CodexBinary:
         ]
         if requested is not None or env_value:
             return inspected[0]
-        stable = [
-            item
-            for item in inspected
-            if item.version is not None
-            and item.prerelease is None
-            and item.error is None
-        ]
-        if stable:
-            return max(stable, key=lambda item: item.version or (0, 0, 0))
+        # Preserve the user's package-manager choice. An npm install wins even
+        # when a standalone or app-bundled binary is also present. Otherwise,
+        # prefer the official standalone layout and only then another manager.
+        for install_method in (INSTALL_NPM, INSTALL_STANDALONE, INSTALL_OTHER):
+            group = [
+                item for item in inspected if item.install_method == install_method
+            ]
+            stable = [
+                item
+                for item in group
+                if item.version is not None
+                and item.prerelease is None
+                and item.error is None
+            ]
+            if stable:
+                return max(stable, key=lambda item: item.version or (0, 0, 0))
+            runnable = [item for item in group if item.path]
+            if runnable:
+                return max(runnable, key=lambda item: item.version or (0, 0, 0))
         details = "; ".join(
             item.error or item.version_text or item.path or "unknown"
             for item in inspected
@@ -116,16 +131,17 @@ class CodexBinary:
     @staticmethod
     def _explicit_candidates(requested: str) -> List[str]:
         expanded = Path(requested).expanduser()
-        if os.sep in requested:
+        if os.sep in requested or (os.altsep and os.altsep in requested):
             return (
                 [str(expanded.resolve())]
-                if expanded.is_file() and os.access(expanded, os.X_OK)
+                if CodexBinary._is_executable(expanded)
                 else []
             )
         for directory in os.environ.get("PATH", "").split(os.pathsep):
-            candidate = Path(directory or os.curdir) / requested
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return [str(candidate.resolve())]
+            for candidate_name in CodexBinary._candidate_names(requested):
+                candidate = Path(directory or os.curdir) / candidate_name
+                if CodexBinary._is_executable(candidate):
+                    return [str(candidate.resolve())]
         return []
 
     @staticmethod
@@ -133,14 +149,108 @@ class CodexBinary:
         candidates: List[str] = []
         seen = set()
         for directory in os.environ.get("PATH", "").split(os.pathsep):
-            candidate = Path(directory or os.curdir) / name
-            if not candidate.is_file() or not os.access(candidate, os.X_OK):
-                continue
-            resolved = str(candidate.resolve())
-            if resolved not in seen:
-                seen.add(resolved)
-                candidates.append(resolved)
+            for candidate_name in CodexBinary._candidate_names(name):
+                candidate = Path(directory or os.curdir) / candidate_name
+                if not CodexBinary._is_executable(candidate):
+                    continue
+                resolved = str(candidate.resolve())
+                if resolved not in seen:
+                    seen.add(resolved)
+                    candidates.append(resolved)
+        for candidate in (
+            *CodexBinary._npm_global_candidates(),
+            *CodexBinary._standalone_candidates(),
+        ):
+            if candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
         return candidates
+
+    @staticmethod
+    def _candidate_names(name: str) -> Tuple[str, ...]:
+        if os.name != "nt" or Path(name).suffix:
+            return (name,)
+        return (f"{name}.exe", f"{name}.cmd", f"{name}.bat", name)
+
+    @staticmethod
+    def _is_executable(path: Path) -> bool:
+        return path.is_file() and (os.name == "nt" or os.access(path, os.X_OK))
+
+    @staticmethod
+    def _npm_global_candidates(timeout: int = 5) -> List[str]:
+        npm = shutil.which("npm")
+        if not npm:
+            return []
+        try:
+            result = subprocess.run(
+                [npm, "prefix", "-g"],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        prefix = Path(result.stdout.strip()).expanduser()
+        candidates: List[str] = []
+        for directory in (prefix / "bin", prefix):
+            for candidate_name in CodexBinary._candidate_names("codex"):
+                candidate = directory / candidate_name
+                if not CodexBinary._is_executable(candidate):
+                    continue
+                resolved = str(candidate.resolve())
+                if CodexBinary._classify_install_method(resolved) == INSTALL_NPM:
+                    candidates.append(resolved)
+        return list(dict.fromkeys(candidates))
+
+    @staticmethod
+    def _standalone_candidates() -> List[str]:
+        home = Path.home()
+        codex_home = Path(os.environ.get("CODEX_HOME", home / ".codex")).expanduser()
+        install_dir = os.environ.get("CODEX_INSTALL_DIR")
+        visible_dirs = [Path(install_dir).expanduser()] if install_dir else []
+        if os.name == "nt":
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            if local_app_data:
+                visible_dirs.append(
+                    Path(local_app_data) / "Programs" / "OpenAI" / "Codex" / "bin"
+                )
+        else:
+            visible_dirs.append(home / ".local" / "bin")
+        direct = [
+            codex_home / "packages" / "standalone" / "current" / "bin" / "codex",
+            codex_home / "packages" / "standalone" / "current" / "codex",
+        ]
+        if os.name == "nt":
+            direct = [path.with_suffix(".exe") for path in direct]
+        candidates: List[str] = []
+        for directory in visible_dirs:
+            for candidate_name in CodexBinary._candidate_names("codex"):
+                direct.append(directory / candidate_name)
+        for candidate in direct:
+            if CodexBinary._is_executable(candidate):
+                candidates.append(str(candidate.resolve()))
+        return list(dict.fromkeys(candidates))
+
+    @staticmethod
+    def _classify_install_method(path: str) -> str:
+        normalized = path.replace("\\", "/").lower()
+        if "/node_modules/@openai/codex/" in normalized or normalized.endswith(
+            "/codex.js"
+        ):
+            return INSTALL_NPM
+        if "/packages/standalone/" in normalized:
+            return INSTALL_STANDALONE
+        try:
+            if Path(path).suffix.lower() in {".cmd", ".bat", ".js"}:
+                head = Path(path).read_text(encoding="utf-8", errors="ignore")[:4096]
+                if "node_modules" in head and "@openai" in head and "codex" in head:
+                    return INSTALL_NPM
+        except OSError:
+            pass
+        return INSTALL_OTHER
 
     @classmethod
     def _inspect(cls, requested: str, path: str, timeout: int) -> "CodexBinary":
@@ -156,6 +266,7 @@ class CodexBinary:
             return cls(
                 requested=requested,
                 path=path,
+                install_method=cls._classify_install_method(path),
                 error=f"Failed to inspect Codex CLI at {path}: {exc}",
             )
 
@@ -165,6 +276,7 @@ class CodexBinary:
                 requested=requested,
                 path=path,
                 version_text=version_text,
+                install_method=cls._classify_install_method(path),
                 error=version_text
                 or f"Codex --version exited with status {result.returncode}",
             )
@@ -178,6 +290,7 @@ class CodexBinary:
             version_text=version_text,
             version=version,
             prerelease=prerelease,
+            install_method=cls._classify_install_method(path),
             error=error,
         )
 

@@ -14,6 +14,7 @@ from .commands import CommandBuilder, CommandSpec
 from .result import ReviewResult
 from .reviewer import CodexReviewer
 from .scope import DiffMetrics, GitInspector, ReviewScope
+from .updates import UpdateOutcome, prepare_codex_binary
 
 __all__ = [
     "DEFAULT_PRESET",
@@ -30,5 +31,7 @@ __all__ = [
     "PresetResolutionError",
     "ReviewResult",
     "ReviewScope",
+    "UpdateOutcome",
+    "prepare_codex_binary",
     "resolve_model_selection",
 ]
