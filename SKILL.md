@@ -16,6 +16,18 @@ description: Use OpenAI Codex CLI as an independent, read-only second-opinion re
 - 安全審查只描述觸發條件、影響與防禦式修法；不要要求 exploit payload 或攻擊步驟。
 - 不使用 `--dangerously-bypass-approvals-and-sandbox`、`--full-auto`、`workspace-write` 或 `danger-full-access`。
 
+## CLI Install & Update Policy
+
+每次 helper 啟動時先執行安裝來源感知的 update preflight；更新只作用於 Codex CLI，不得修改被審查 repo：
+
+1. `--codex-bin` 或 `CODEX_REVIEWER_CODEX_BIN` 是明確 pin，完全照用且不自動更新。
+2. 若偵測到 global npm `@openai/codex`，優先使用 npm 版本，即使 standalone 也存在。
+3. 沒有 npm 版本時，使用官方 standalone；若尚未安裝則透過 OpenAI 官方 installer bootstrap。
+4. 由選定 binary 的 `codex update` 判斷並更新原安裝來源；舊版不支援 update 時才用同來源 repair。
+5. 成功檢查後快取 24 小時；失敗則退避 15 分鐘。離線時若既有 stable CLI 符合最低版本，警告後繼續。
+
+`--no-update-check` 可單次停用；`--force-update-check` 可忽略快取。CI／離線環境可設 `CODEX_REVIEWER_AUTO_UPDATE=0`；TTL 可用 `CODEX_REVIEWER_UPDATE_TTL_SECONDS` 調整。
+
 ## Workflow
 
 1. 先讀 `git status --short --branch`、目標 diff、相關規格與 repo instructions，固定 base/head 或 commit scope。
@@ -82,7 +94,7 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
   --result-json /tmp/codex-review-doctor.json
 ```
 
-使用 `--dry-run` 檢查最後命令；使用 `--codex-bin /absolute/path/codex` 或 `CODEX_REVIEWER_CODEX_BIN` 選定 binary。需要附加 repo-specific criteria 時用 `--instructions`，不要把 scope 與 prompt 偷混進 native positional argument。
+使用 `--dry-run` 檢查最後命令；使用 `--codex-bin /absolute/path/codex` 或 `CODEX_REVIEWER_CODEX_BIN` 選定並自行管理固定 binary。需要附加 repo-specific criteria 時用 `--instructions`，不要把 scope 與 prompt 偷混進 native positional argument。
 
 ## Quality Gate
 

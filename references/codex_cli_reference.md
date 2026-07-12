@@ -5,6 +5,7 @@
 ## 目錄
 
 - [模式選擇矩陣](#模式選擇矩陣)
+- [安裝來源與自動更新](#安裝來源與自動更新)
 - [模型與推理層級](#模型與推理層級)
 - [命令形狀](#命令形狀)
 - [Native review 邊界](#native-review-邊界)
@@ -31,6 +32,34 @@
 | Ephemeral session | 是 | 是 | 預設啟用 |
 
 Native review 適合標準變更審查。Generic review 適合規格對照、架構、安全、圖片、搜尋或需要穩定 schema 的流程。
+
+## 安裝來源與自動更新
+
+Helper 預設使用以下優先序：
+
+1. `--codex-bin` 或 `CODEX_REVIEWER_CODEX_BIN`：使用者明確 pin，不自動更新。
+2. Global npm `@openai/codex`：只要偵測到就優先沿用，不因 standalone 較新而切換來源。
+3. 官方 standalone：從 PATH、`CODEX_INSTALL_DIR`、`$CODEX_HOME/packages/standalone/current` 或平台預設位置尋找。
+4. 其他來源：只有停用更新或 standalone bootstrap 失敗時才作為相容 fallback。
+
+沒有 npm 或 standalone 時，macOS/Linux 透過 `https://chatgpt.com/codex/install.sh`、Windows 透過 `https://chatgpt.com/codex/install.ps1` bootstrap 最新 standalone。既有 npm／standalone 則呼叫選定 binary 的 `codex update`，讓 Codex 自己保留原安裝管理器。
+
+成功 update check 會以 binary path、版本及安裝來源快取 24 小時。失敗會退避 15 分鐘，且不會把 npm 使用者切換到 standalone；若現有 stable CLI 仍符合最低版本，review 會帶 warning 繼續。
+
+控制面：
+
+```bash
+# 單次略過
+python3 scripts/codex_review.py --no-update-check doctor
+
+# 立即重查
+python3 scripts/codex_review.py --force-update-check doctor
+
+# CI / offline
+CODEX_REVIEWER_AUTO_UPDATE=0 python3 scripts/codex_review.py doctor
+```
+
+`CODEX_REVIEWER_UPDATE_TTL_SECONDS` 調整快取秒數；`CODEX_REVIEWER_UPDATE_CACHE` 指定 cache file。結果 envelope 的 `install_method` 與 `update`、doctor 的 `update` diagnostic 會記錄最終選擇與檢查狀態。
 
 ## 模型與推理層級
 
@@ -245,6 +274,7 @@ codex doctor --json
 codex debug models
 codex debug models --bundled
 codex features list
+codex update --help
 ```
 
 - `--strict-config`：遇到設定漂移時用來找出未知欄位；不必每次強制，否則較新 project config 可能阻斷 review。
@@ -261,7 +291,10 @@ codex features list
 - [Configuration Reference](https://developers.openai.com/codex/config-reference/)
 - [Config Basics](https://learn.chatgpt.com/docs/config-file/config-basic)
 - [Code Review](https://learn.chatgpt.com/docs/code-review)
+- [Standalone installer for macOS/Linux](https://chatgpt.com/codex/install.sh)
+- [Standalone installer for Windows](https://chatgpt.com/codex/install.ps1)
 - [GPT-5.6 Sol model](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- [0.144.1 install-source-aware update action](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/tui/src/update_action.rs)
 - [0.144.1 review task source](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/core/src/tasks/review.rs)
 - [0.144.1 exec routing source](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/exec/src/lib.rs)
 - [0.144.1 native rubric](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/prompts/templates/review/rubric.md)

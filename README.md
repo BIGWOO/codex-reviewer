@@ -4,12 +4,14 @@
 
 ## Minimum Requirements
 
-- Codex CLI `0.144.1` 或更新的 stable version
 - Python 3.10+
 - Git
+- 首次 bootstrap／定期更新時可連線至 OpenAI 官方 installer 或 npm registry
 - 已完成 Codex CLI 登入，且帳號可使用至少一個支援模型
 
-本 skill 不會自動更新 Codex CLI，也不會修改使用者的 `$CODEX_HOME` config。
+若尚未安裝 Codex CLI，skill 會預設 bootstrap 最新 standalone；若已安裝 global npm `@openai/codex`，則保留 npm 安裝來源。最終執行版本必須是 `0.144.1` 或更新的 stable version。
+
+自動更新只更新 Codex CLI，不會修改被審查 repo，也不會覆寫 `$CODEX_HOME` config。
 
 ## Install
 
@@ -30,7 +32,16 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 
 ## Binary Diagnostic
 
-機器上可能同時存在 npm、Homebrew 或舊版 binary。先確認實際執行者：
+### 自動選擇與更新
+
+預設政策：
+
+1. `--codex-bin`／`CODEX_REVIEWER_CODEX_BIN` 明確 pin，不自動更新。
+2. 偵測到 global npm Codex 時，優先使用並透過 `codex update` 更新 npm 版本。
+3. 沒有 npm 版本時，使用或 bootstrap 官方 standalone，再透過 `codex update` 更新。
+4. 成功檢查會快取 24 小時；失敗會退避 15 分鐘。現有版本仍相容時會警告後繼續。
+
+機器上可能同時存在 npm、Homebrew、App 內嵌或舊版 binary。可用以下命令確認：
 
 ```bash
 type -a codex
@@ -54,6 +65,21 @@ export CODEX_REVIEWER_CODEX_BIN=/absolute/path/to/codex
 ```
 
 `doctor` 不呼叫模型；它檢查 binary version、model catalog、Git 與 reviewer 所需能力。遇到 config 問題時再加 `--strict-config`。
+
+更新控制：
+
+```bash
+# 本次略過自動更新
+python3 "$SKILL_DIR/scripts/codex_review.py" --no-update-check doctor
+
+# 忽略 24 小時快取，立即檢查
+python3 "$SKILL_DIR/scripts/codex_review.py" --force-update-check doctor
+
+# CI／離線環境全域停用
+export CODEX_REVIEWER_AUTO_UPDATE=0
+```
+
+可用 `CODEX_REVIEWER_UPDATE_TTL_SECONDS` 調整快取秒數，或用 `CODEX_REVIEWER_UPDATE_CACHE` 指定 cache file。
 
 ## Quick Start
 
@@ -115,6 +141,8 @@ Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設
 - `--profile <NAME>`：載入 `$CODEX_HOME/<NAME>.config.toml` V2 profile。
 - `--fast`：使用 catalog 提供的 Fast tier；增加 usage，只能 opt-in。
 - `--strict-config`：未知 config field 直接失敗，適合 diagnostic/CI。
+- `--no-update-check`：本次停用 Codex CLI 自動安裝／更新檢查。
+- `--force-update-check`：忽略快取，立即依既有安裝來源執行更新。
 - `--result-json <FILE>`：額外寫入 `schema_version: 2` wrapper result envelope；不取代 stdout final text。
 - `--output <FILE>`：保存 raw stdout / JSONL。
 - `--last-message-output <FILE>`：保存 final reviewer message。
@@ -137,6 +165,7 @@ Structured review 預設使用 [references/review_output_schema.json](references
 
 - `SKILL.md`：agent workflow、trigger 與 quality gate
 - `scripts/codex_review.py`：CLI wrapper
+- `scripts/codex_reviewer/updates.py`：npm 優先、standalone bootstrap 與 update cache
 - `references/codex_cli_reference.md`：0.144.1 capability matrix、V2 profile 與診斷
 - `references/example_prompts.md`：parameterized generic prompts
 - `references/review_output_schema.json`：v2 native-compatible schema
