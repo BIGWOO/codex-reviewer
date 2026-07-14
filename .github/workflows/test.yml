@@ -46,6 +46,8 @@ jobs:
       - run: codex exec --help > /dev/null
       - run: codex exec review --help > /dev/null
       - run: codex update --help > /dev/null
+      - run: codex --help | grep -- '--disable'
+      - run: codex features list | grep -E '^(apps|multi_agent|plugins)[[:space:]]'
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |
@@ -74,6 +76,8 @@ jobs:
       - run: codex exec --help > /dev/null
       - run: codex exec review --help > /dev/null
       - run: codex update --help > /dev/null
+      - run: codex --help | grep -- '--disable'
+      - run: codex features list | grep -E '^(apps|multi_agent|plugins)[[:space:]]'
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |
