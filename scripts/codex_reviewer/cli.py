@@ -180,7 +180,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--isolated",
         action="store_true",
-        help="Alias for --ignore-user-config --ignore-rules.",
+        help=(
+            "Alias for --ignore-user-config --ignore-rules; does not disable "
+            "skill discovery, skills, or plugins."
+        ),
     )
     parser.add_argument(
         "--search",

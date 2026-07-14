@@ -146,10 +146,12 @@ Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設
 - `--result-json <FILE>`：額外寫入 `schema_version: 2` wrapper result envelope；不取代 stdout final text。
 - `--output <FILE>`：保存 raw stdout / JSONL。
 - `--last-message-output <FILE>`：保存 final reviewer message。
-- `--isolated`：隔離 user config/rules；只在受控環境使用。
+- `--isolated`：只忽略 user config/rules；不會停用 skill discovery、skills 或 plugins。
 - `--allow-large-diff`：越過大型 diff guard；應先拆 task 或 module。
 
 Structured review 預設使用 [references/review_output_schema.json](references/review_output_schema.json)。Schema 採用 Codex native field names，但 enforcement 由 generic `codex exec --output-schema` 提供。
+
+同一 repo 與 scope 一次只能執行一個 review。`agent_message`、skills context budget 警告與 heartbeat 都是進度訊號；必須等待 `turn.completed` 與有效 final result，不要在原 process 尚未結束時啟動 fallback。
 
 ## Review Contract
 
