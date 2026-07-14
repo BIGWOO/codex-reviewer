@@ -97,6 +97,17 @@ class CommandBuilderTests(unittest.TestCase):
         ]
         self.assertEqual(len(shell_path_values), 1)
         self.assertIn(git_dir, shell_path_values[0])
+        self.assertNotIn(git_dir, spec.display_command)
+        self.assertIn("<injected>", spec.display_command)
+
+    def test_minimal_context_is_default_and_can_be_disabled(self) -> None:
+        minimal = list(self.builder().generic("review").argv)
+        full = list(self.builder(minimal_context=False).generic("review").argv)
+
+        for feature in ("plugins", "apps", "multi_agent"):
+            self.assertIn(feature, minimal)
+            self.assertNotIn(feature, full)
+        self.assertEqual(minimal.count("--disable"), 3)
 
 
 if __name__ == "__main__":

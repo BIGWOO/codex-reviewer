@@ -34,6 +34,7 @@ class CliContractTests(unittest.TestCase):
             "--fast",
             "--dry-run",
             "--result-json",
+            "--scope-manifest",
             "--no-update-check",
             "--force-update-check",
         ):
@@ -136,6 +137,30 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(envelope["version"], "0.144.1")
         self.assertEqual(envelope["scope"]["kind"], "custom")
         self.assertNotIn("Review this fixture", envelope["sanitized_command"])
+        self.assertIn("<injected>", envelope["sanitized_command"])
+        self.assertNotIn(os.environ.get("PATH", ""), envelope["sanitized_command"])
+        self.assertNotIn("output", envelope)
+        self.assertNotIn("events", envelope)
+
+    def test_result_envelope_events_are_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = make_fake_codex(root)
+            result_path = root / "result.json"
+            result = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--skip-git-repo-check",
+                "--include-events",
+                "--result-json",
+                str(result_path),
+                "custom",
+                "review",
+            )
+            envelope = json.loads(result_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(len(envelope["events"]), 4)
 
     def test_native_scope_and_profile_conflicts_fail_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -329,6 +354,41 @@ class CliContractTests(unittest.TestCase):
             }
             <= check_names
         )
+
+    def test_doctor_auth_config_detail_separates_source_overall_status(self) -> None:
+        doctor_output = {
+            "overallStatus": "fail",
+            "checks": {
+                check_id: {"status": "ok", "summary": "healthy"}
+                for check_id in (
+                    "auth.credentials",
+                    "config.load",
+                    "installation",
+                    "runtime.provenance",
+                )
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = make_fake_codex(root)
+            result_path = root / "doctor.json"
+            result = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--result-json",
+                str(result_path),
+                "doctor",
+                env={"FAKE_CODEX_DOCTOR_OUTPUT": json.dumps(doctor_output)},
+            )
+            envelope = json.loads(result_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        auth = next(
+            check for check in envelope["diagnostics"] if check["name"] == "auth_config"
+        )
+        self.assertEqual(auth["status"], "pass")
+        self.assertEqual(auth["detail"]["review_health_status"], "pass")
+        self.assertEqual(auth["detail"]["source_overall_status"], "fail")
 
     def test_output_paths_must_be_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -621,7 +681,7 @@ class CliContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("title", result.stderr)
 
-    def test_quick_alias_resolves_terra_medium(self) -> None:
+    def test_quick_alias_resolves_sol_medium(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = make_fake_codex(root)
@@ -640,7 +700,7 @@ class CliContractTests(unittest.TestCase):
 
         execution = next(call for call in reversed(calls) if "exec" in call["argv"])
         argv = execution["argv"]
-        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5.6-terra")
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5.6-sol")
         self.assertTrue(
             any('model_reasoning_effort="medium"' == value for value in argv)
         )
@@ -695,6 +755,153 @@ class CliContractTests(unittest.TestCase):
         self.assertNotEqual(blocked.returncode, 0)
         self.assertIn("large", blocked.stderr.lower())
         self.assertEqual(allowed.returncode, 0, allowed.stderr)
+
+    def test_scope_manifest_sizes_every_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = init_git_fixture(root / "first")
+            second = init_git_fixture(root / "second")
+            (first / "first.txt").write_text("first\n", encoding="utf-8")
+            (second / "second.txt").write_text("second\n", encoding="utf-8")
+            manifest = root / "scope.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "scopes": [
+                            {"repo": str(first), "kind": "uncommitted"},
+                            {"repo": str(second), "kind": "uncommitted"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binary = make_fake_codex(root)
+            log_path = root / "calls.json"
+            blocked = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(first),
+                "--scope-manifest",
+                str(manifest),
+                "--max-changed-files",
+                "1",
+                "--dry-run",
+                "custom",
+                "review declared scope",
+            )
+            result_path = root / "result.json"
+            allowed = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(first),
+                "--scope-manifest",
+                str(manifest),
+                "--max-changed-files",
+                "1",
+                "--allow-large-diff",
+                "--result-json",
+                str(result_path),
+                "custom",
+                "review declared scope",
+                env={"FAKE_CODEX_LOG": str(log_path)},
+            )
+            envelope = json.loads(result_path.read_text(encoding="utf-8"))
+            execution = next(
+                call
+                for call in reversed(read_fake_log(log_path))
+                if "exec" in call["argv"]
+            )
+
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("2 files", blocked.stderr)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertEqual(envelope["scope"]["metrics"]["changed_files"], 2)
+        self.assertEqual(len(envelope["scope"]["manifest"]), 2)
+        self.assertIn(str(second.resolve()), execution["argv"])
+        self.assertIn(str(first.resolve()), execution["stdin"])
+        self.assertIn(str(second.resolve()), execution["stdin"])
+
+    def test_deep_custom_review_requires_sized_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = make_fake_codex(Path(tmp))
+            result = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--skip-git-repo-check",
+                "--preset",
+                "deep",
+                "--dry-run",
+                "custom",
+                "review broad scope",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--scope-manifest", result.stderr)
+
+    def test_explicit_max_requires_narrow_scope_and_rejects_large_override(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            (repo / "one.txt").write_text("one\n", encoding="utf-8")
+            binary = make_fake_codex(root)
+            blocked = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--reasoning-effort",
+                "max",
+                "--allow-large-diff",
+                "--dry-run",
+                "structured-review",
+                "--uncommitted",
+            )
+            allowed = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--reasoning-effort",
+                "max",
+                "--dry-run",
+                "structured-review",
+                "--uncommitted",
+            )
+
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("max", blocked.stderr.lower())
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+
+    def test_explicit_max_hard_limit_ignores_configurable_diff_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            for index in range(16):
+                (repo / f"file-{index}.txt").write_text("changed\n", encoding="utf-8")
+            binary = make_fake_codex(root)
+            result = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--reasoning-effort",
+                "max",
+                "--max-changed-files",
+                "999",
+                "--max-diff-lines",
+                "999999",
+                "--dry-run",
+                "structured-review",
+                "--uncommitted",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("15 files", result.stderr)
 
     def test_review_range_only_sizes_scope_and_does_not_rewrite_prompt(self) -> None:
         secret = "PROMPT-MUST-STAY-UNCHANGED"

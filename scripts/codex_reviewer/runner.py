@@ -32,7 +32,14 @@ except ImportError:  # pragma: no cover - Windows best effort
 
 def sanitize_command(cmd: Sequence[str], sensitive_values: Iterable[str] = ()) -> str:
     sensitive = {value for value in sensitive_values if value}
-    redacted = ["<prompt>" if argument in sensitive else argument for argument in cmd]
+    redacted = []
+    for argument in cmd:
+        if argument in sensitive:
+            redacted.append("<prompt>")
+        elif argument.startswith("shell_environment_policy.set.PATH="):
+            redacted.append('shell_environment_policy.set.PATH="<injected>"')
+        else:
+            redacted.append(argument)
     return shlex.join(redacted)
 
 
@@ -64,6 +71,24 @@ def extract_final(events: Sequence[Mapping[str, object]]) -> Optional[str]:
                 text = item.get("text")
                 if isinstance(text, str):
                     return text
+                nested = _nested_message_text(item)
+                if nested:
+                    return nested
+        if event.get("type") == "agent_message":
+            nested = _nested_message_text(event)
+            if nested:
+                return nested
+    return None
+
+
+def extract_last_agent_message(
+    events: Sequence[Mapping[str, object]],
+) -> Optional[str]:
+    """Return non-terminal agent progress without treating it as a final result."""
+    for event in reversed(events):
+        if event.get("type") == "item.completed":
+            item = event.get("item")
+            if isinstance(item, Mapping) and item.get("type") == "agent_message":
                 nested = _nested_message_text(item)
                 if nested:
                     return nested
@@ -176,6 +201,7 @@ class CodexProcessRunner:
         self,
         binary: CodexBinary,
         timeout: int,
+        idle_timeout: int = 180,
         json_output: bool = True,
         output_file: Optional[str] = None,
         last_message_output: Optional[str] = None,
@@ -184,6 +210,7 @@ class CodexProcessRunner:
     ):
         self.binary = binary
         self.timeout = timeout
+        self.idle_timeout = idle_timeout
         self.json_output = json_output
         self.output_file = output_file
         self.last_message_output = last_message_output
@@ -203,6 +230,7 @@ class CodexProcessRunner:
         sensitive_values: Iterable[str] = (),
         stdin_payload: Optional[str] = None,
         lock_key: Optional[str] = None,
+        lock_keys: Optional[Sequence[str]] = None,
     ) -> Dict[str, object]:
         sensitive = tuple(value for value in sensitive_values if value)
         if stdin_payload:
@@ -220,12 +248,14 @@ class CodexProcessRunner:
         events: List[Mapping[str, object]] = []
         event_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
         started_at = time.monotonic()
+        last_activity_at = started_at
         last_heartbeat = started_at
         process: Optional[subprocess.Popen[str]] = None
         timed_out = False
+        timeout_reason: Optional[str] = None
         stdin_thread: Optional[threading.Thread] = None
         stdin_errors: List[str] = []
-        lock_descriptor: Optional[int] = None
+        lock_descriptors: List[int] = []
         runtime_warnings = list(warnings or [])
 
         def read_stream(stream, stream_name: str) -> None:
@@ -247,9 +277,17 @@ class CodexProcessRunner:
                     pass
 
         try:
+            requested_lock_keys = list(lock_keys or [])
             if lock_key:
-                lock_descriptor, lock_error = self._acquire_execution_lock(lock_key)
+                requested_lock_keys.append(lock_key)
+            for requested_lock_key in sorted(set(requested_lock_keys)):
+                lock_descriptor, lock_error = self._acquire_execution_lock(
+                    requested_lock_key
+                )
                 if lock_error:
+                    for descriptor in reversed(lock_descriptors):
+                        self._release_execution_lock(descriptor)
+                    lock_descriptors.clear()
                     return ReviewResult(
                         success=False,
                         mode=mode,
@@ -259,6 +297,8 @@ class CodexProcessRunner:
                         model=model,
                         effort=effort,
                         timeout=self.timeout,
+                        idle_timeout=self.idle_timeout,
+                        hard_timeout=self.timeout,
                         service_tier=service_tier,
                         warnings=runtime_warnings,
                         command=sanitized,
@@ -268,6 +308,8 @@ class CodexProcessRunner:
                     runtime_warnings.append(
                         "Single-flight locking is unavailable on this platform"
                     )
+                else:
+                    lock_descriptors.append(lock_descriptor)
             if (
                 output_path
                 and last_message_path
@@ -326,6 +368,7 @@ class CodexProcessRunner:
                         output_handle,
                         sensitive,
                     )
+                    last_activity_at = time.monotonic()
                 except queue.Empty:
                     pass
 
@@ -346,6 +389,12 @@ class CodexProcessRunner:
                     last_heartbeat = now
                 if now - started_at > self.timeout:
                     timed_out = True
+                    timeout_reason = "hard"
+                    self._terminate_process_group(process)
+                    break
+                if self.idle_timeout and now - last_activity_at > self.idle_timeout:
+                    timed_out = True
+                    timeout_reason = "idle"
                     self._terminate_process_group(process)
                     break
 
@@ -368,7 +417,9 @@ class CodexProcessRunner:
                 process.wait(timeout=2)
 
             output = "".join(stdout_lines)
-            stderr = self._redact_text("".join(stderr_lines), sensitive)
+            stderr = self._summarize_stderr(
+                self._redact_text("".join(stderr_lines), sensitive)
+            )
             if stderr:
                 print(
                     stderr,
@@ -404,11 +455,13 @@ class CodexProcessRunner:
                 suffix = (
                     f"; partial output written to {output_path}" if output_path else ""
                 )
-                error = f"Codex review timed out after {self.timeout} seconds{suffix}"
-                if self.last_message_output and final:
-                    self._write_private(
-                        Path(self.last_message_output).expanduser(), final
-                    )
+                elapsed_limit = (
+                    self.idle_timeout if timeout_reason == "idle" else self.timeout
+                )
+                error = (
+                    f"Codex review {timeout_reason or 'hard'} timed out after "
+                    f"{elapsed_limit} seconds{suffix}"
+                )
             elif exit_code != 0:
                 error = self._error_detail(stderr, exit_code, events)
             elif stdin_errors:
@@ -431,6 +484,11 @@ class CodexProcessRunner:
             ]
             safe_output = self._redact_text(output, sensitive)
             safe_events = [self._redact_payload(event, sensitive) for event in events]
+            partial_progress = None
+            if not success:
+                partial = extract_last_agent_message(events)
+                if partial:
+                    partial_progress = self._redact_text(partial, sensitive)
 
             print(
                 f"[codex-review] finished in {int(time.monotonic() - started_at)}s",
@@ -447,7 +505,10 @@ class CodexProcessRunner:
                 effort=effort,
                 usage=usage,
                 timeout=self.timeout,
+                idle_timeout=self.idle_timeout,
+                hard_timeout=self.timeout,
                 timed_out=timed_out,
+                timeout_reason=timeout_reason,
                 exit_code=exit_code,
                 service_tier=service_tier,
                 warnings=safe_warnings,
@@ -456,6 +517,7 @@ class CodexProcessRunner:
                 error=error,
                 output=safe_output,
                 events=safe_events,
+                partial_progress=partial_progress,
             ).to_dict()
         except FileNotFoundError:
             return ReviewResult(
@@ -467,6 +529,8 @@ class CodexProcessRunner:
                 model=model,
                 effort=effort,
                 timeout=self.timeout,
+                idle_timeout=self.idle_timeout,
+                hard_timeout=self.timeout,
                 service_tier=service_tier,
                 warnings=list(warnings or []),
                 command=sanitized,
@@ -484,6 +548,8 @@ class CodexProcessRunner:
                 model=model,
                 effort=effort,
                 timeout=self.timeout,
+                idle_timeout=self.idle_timeout,
+                hard_timeout=self.timeout,
                 service_tier=service_tier,
                 warnings=list(warnings or []),
                 command=sanitized,
@@ -492,7 +558,8 @@ class CodexProcessRunner:
         finally:
             if output_handle:
                 output_handle.close()
-            self._release_execution_lock(lock_descriptor)
+            for descriptor in reversed(lock_descriptors):
+                self._release_execution_lock(descriptor)
 
     def _consume_line(
         self,
@@ -618,6 +685,23 @@ class CodexProcessRunner:
         return (
             detail or extract_error(events) or f"Codex exited with status {exit_code}"
         )
+
+    @staticmethod
+    def _summarize_stderr(value: str) -> str:
+        if not value:
+            return value
+        ordered: List[str] = []
+        counts: Dict[str, int] = {}
+        for line in value.splitlines():
+            if line not in counts:
+                ordered.append(line)
+                counts[line] = 0
+            counts[line] += 1
+        rendered = [
+            f"{line} [repeated {counts[line]} times]" if counts[line] > 1 else line
+            for line in ordered
+        ]
+        return "\n".join(rendered) + ("\n" if value.endswith("\n") else "")
 
     @staticmethod
     def _redact_text(value: str, sensitive_values: Sequence[str]) -> str:

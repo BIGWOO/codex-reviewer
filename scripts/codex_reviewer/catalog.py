@@ -29,7 +29,6 @@ class PresetCandidate:
 
 PRESET_CANDIDATES: Mapping[str, Tuple[PresetCandidate, ...]] = {
     "quick": (
-        PresetCandidate("gpt-5.6-terra", "medium"),
         PresetCandidate("gpt-5.6-sol", "medium"),
         PresetCandidate("gpt-5.5", "medium"),
     ),
@@ -38,7 +37,7 @@ PRESET_CANDIDATES: Mapping[str, Tuple[PresetCandidate, ...]] = {
         PresetCandidate("gpt-5.5", "high"),
     ),
     "deep": (
-        PresetCandidate("gpt-5.6-sol", "max"),
+        PresetCandidate("gpt-5.6-sol", "xhigh"),
         PresetCandidate("gpt-5.5", "xhigh"),
     ),
     "ultra": (PresetCandidate("gpt-5.6-sol", "ultra"),),

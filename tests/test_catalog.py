@@ -17,6 +17,7 @@ if str(SCRIPTS) not in os.sys.path:
 
 from codex_reviewer.catalog import (  # noqa: E402
     CODEX_BIN_ENV,
+    PRESET_CANDIDATES,
     CodexBinary,
     ModelCatalog,
     ModelInfo,
@@ -138,15 +139,24 @@ class CatalogAndPresetTests(unittest.TestCase):
 
     def test_presets_choose_expected_model_and_effort(self) -> None:
         expected = {
-            "quick": ("gpt-5.6-terra", "medium"),
+            "quick": ("gpt-5.6-sol", "medium"),
             "standard": ("gpt-5.6-sol", "high"),
-            "deep": ("gpt-5.6-sol", "max"),
+            "deep": ("gpt-5.6-sol", "xhigh"),
             "ultra": ("gpt-5.6-sol", "ultra"),
         }
         for preset, pair in expected.items():
             with self.subTest(preset=preset):
                 selection = resolve_model_selection(preset, self.catalog)
                 self.assertEqual((selection.model, selection.effort), pair)
+
+        self.assertNotIn(
+            "gpt-5.6-terra",
+            {
+                candidate.model
+                for candidates in PRESET_CANDIDATES.values()
+                for candidate in candidates
+            },
+        )
 
     def test_auto_preset_falls_back_but_ultra_never_does(self) -> None:
         fallback_catalog = ModelCatalog(

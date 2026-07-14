@@ -167,7 +167,22 @@ def main() -> int:
                 json.dumps({"type": "thread.started", "thread_id": "partial-thread"}),
                 flush=True,
             )
-        time.sleep(sleep_seconds)
+        progress_interval = float(os.environ.get("FAKE_CODEX_PROGRESS_INTERVAL", "0"))
+        if progress_interval and "--json" in args:
+            deadline = time.monotonic() + sleep_seconds
+            while time.monotonic() < deadline:
+                time.sleep(min(progress_interval, deadline - time.monotonic()))
+                print(
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {"type": "reasoning", "text": "progress"},
+                        }
+                    ),
+                    flush=True,
+                )
+        else:
+            time.sleep(sleep_seconds)
 
     exit_code = int(os.environ.get("FAKE_CODEX_EXIT", "0"))
     final_message = os.environ.get(

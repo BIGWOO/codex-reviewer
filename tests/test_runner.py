@@ -67,10 +67,18 @@ class JsonlHelpersTests(unittest.TestCase):
 
     def test_sanitize_command_redacts_sensitive_values(self) -> None:
         command = sanitize_command(
-            ["codex", "exec", "secret instructions"],
+            [
+                "codex",
+                "--config",
+                'shell_environment_policy.set.PATH="/very/long/private/path"',
+                "exec",
+                "secret instructions",
+            ],
             sensitive_values=["secret instructions"],
         )
         self.assertNotIn("secret instructions", command)
+        self.assertNotIn("/very/long/private/path", command)
+        self.assertIn("<injected>", command)
         self.assertIn("<prompt>", command)
 
 
@@ -125,6 +133,7 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("turn.completed", result["error"])
         self.assertIsNone(result["final_result"])
+        self.assertIsNotNone(result["partial_progress"])
 
     @unittest.skipIf(os.name == "nt", "single-flight lock is POSIX-only")
     def test_same_scope_cannot_run_concurrently_and_lock_is_released(self) -> None:
@@ -160,7 +169,7 @@ class ProcessRunnerTests(unittest.TestCase):
                         model="gpt-5.6-sol",
                         effort="high",
                         service_tier=None,
-                        lock_key=lock_key,
+                        lock_keys=["repo:first", lock_key],
                     )
                 )
 
@@ -179,7 +188,7 @@ class ProcessRunnerTests(unittest.TestCase):
                 model="gpt-5.5",
                 effort="xhigh",
                 service_tier=None,
-                lock_key=lock_key,
+                lock_keys=["repo:second", lock_key],
             )
             duplicate_elapsed = time.monotonic() - started
             thread.join(timeout=5)
@@ -191,7 +200,7 @@ class ProcessRunnerTests(unittest.TestCase):
                 model="gpt-5.5",
                 effort="xhigh",
                 service_tier=None,
-                lock_key=lock_key,
+                lock_keys=["repo:second", lock_key],
             )
             executions = read_fake_log(log_path)
 
@@ -400,6 +409,79 @@ class ProcessRunnerTests(unittest.TestCase):
             ),
             "before:<prompt>:after",
         )
+
+    def test_repeated_stderr_lines_are_compacted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = make_fake_codex(root)
+            binary = CodexBinary.discover(str(fake))
+            runner = CodexProcessRunner(
+                binary,
+                timeout=5,
+                env={
+                    **os.environ,
+                    "FAKE_CODEX_STDERR": "duplicate warning\nduplicate warning",
+                },
+            )
+            captured = io.StringIO()
+            with redirect_stderr(captured):
+                result = runner.run(
+                    [str(fake), "exec", "--json", "-"],
+                    stdin_payload="review",
+                    mode="generic",
+                    scope={"kind": "custom"},
+                    model="gpt-5.6-sol",
+                    effort="high",
+                    service_tier=None,
+                )
+
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertEqual(captured.getvalue().count("duplicate warning"), 1)
+        self.assertIn("repeated 2 times", captured.getvalue())
+
+    def test_idle_and_hard_timeouts_are_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = make_fake_codex(root)
+            binary = CodexBinary.discover(str(fake))
+            idle_runner = CodexProcessRunner(
+                binary,
+                timeout=5,
+                idle_timeout=1,
+                env={**os.environ, "FAKE_CODEX_SLEEP": "120"},
+            )
+            idle = idle_runner.run(
+                [str(fake), "exec", "--json", "-"],
+                stdin_payload="review",
+                mode="generic",
+                scope={"kind": "custom"},
+                model="gpt-5.6-sol",
+                effort="high",
+                service_tier=None,
+            )
+
+            hard_runner = CodexProcessRunner(
+                binary,
+                timeout=1,
+                idle_timeout=1,
+                env={
+                    **os.environ,
+                    "FAKE_CODEX_SLEEP": "120",
+                    "FAKE_CODEX_PROGRESS_INTERVAL": "0.2",
+                },
+            )
+            hard = hard_runner.run(
+                [str(fake), "exec", "--json", "-"],
+                stdin_payload="review",
+                mode="generic",
+                scope={"kind": "custom"},
+                model="gpt-5.6-sol",
+                effort="high",
+                service_tier=None,
+            )
+
+        self.assertEqual(idle["timeout_reason"], "idle")
+        self.assertEqual(hard["timeout_reason"], "hard")
 
     def test_large_stdin_write_remains_timeout_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

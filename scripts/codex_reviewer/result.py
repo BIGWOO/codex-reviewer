@@ -17,7 +17,10 @@ class ReviewResult:
     effort: Optional[str] = None
     usage: Optional[Mapping[str, Any]] = None
     timeout: Optional[int] = None
+    idle_timeout: Optional[int] = None
+    hard_timeout: Optional[int] = None
     timed_out: bool = False
+    timeout_reason: Optional[str] = None
     exit_code: Optional[int] = None
     service_tier: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
@@ -26,6 +29,7 @@ class ReviewResult:
     error: Optional[str] = None
     output: Optional[str] = None
     events: List[Mapping[str, Any]] = field(default_factory=list)
+    partial_progress: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return the v2 envelope while retaining v1 dictionary keys."""
@@ -40,7 +44,10 @@ class ReviewResult:
             "effort": self.effort,
             "usage": dict(self.usage) if self.usage is not None else None,
             "timeout": self.timeout,
+            "idle_timeout": self.idle_timeout,
+            "hard_timeout": self.hard_timeout,
             "timed_out": self.timed_out,
+            "timeout_reason": self.timeout_reason,
             "exit_code": self.exit_code,
             "service_tier": self.service_tier,
             "warnings": list(self.warnings),
@@ -49,6 +56,7 @@ class ReviewResult:
             "error": self.error,
             "output": self.output,
             "events": list(self.events),
+            "partial_progress": self.partial_progress,
             # Compatibility aliases used by v1 callers.
             "command": self.command,
             "final": self.final,

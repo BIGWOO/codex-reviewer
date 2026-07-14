@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 class ScopeError(ValueError):
     """Raised when a review scope cannot be validated or inspected."""
+
+
+SCOPE_MANIFEST_VERSION = 1
+SCOPE_MANIFEST_KINDS = {"uncommitted", "base", "commit", "range"}
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,86 @@ class ReviewScope:
         if self.kind == "range":
             return f"Review only the changes in git range {self.value}."
         return ""
+
+
+@dataclass(frozen=True)
+class ManifestScope:
+    repo: str
+    scope: ReviewScope
+
+    def to_dict(self) -> Dict[str, Optional[str]]:
+        return {
+            "repo": self.repo,
+            "kind": self.scope.kind,
+            "value": self.scope.value,
+        }
+
+
+def load_scope_manifest(path_value: str) -> List[ManifestScope]:
+    path = Path(path_value).expanduser().resolve()
+    if not path.is_file():
+        raise ScopeError(f"Scope manifest does not exist: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ScopeError(f"Invalid scope manifest {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ScopeError("Scope manifest must be a JSON object")
+    if payload.get("version") != SCOPE_MANIFEST_VERSION:
+        raise ScopeError(f"Scope manifest version must be {SCOPE_MANIFEST_VERSION}")
+    raw_scopes = payload.get("scopes")
+    if not isinstance(raw_scopes, list) or not raw_scopes:
+        raise ScopeError("Scope manifest scopes must be a non-empty array")
+
+    entries: List[ManifestScope] = []
+    seen = set()
+    for index, item in enumerate(raw_scopes):
+        label = f"Scope manifest entry {index}"
+        if not isinstance(item, Mapping):
+            raise ScopeError(f"{label} must be an object")
+        extras = sorted(set(item) - {"repo", "kind", "value"})
+        if extras:
+            raise ScopeError(f"{label} has unsupported fields: {', '.join(extras)}")
+        repo_value = item.get("repo")
+        kind = item.get("kind")
+        value = item.get("value")
+        if not isinstance(repo_value, str) or not repo_value.strip():
+            raise ScopeError(f"{label} repo must be a non-empty path")
+        repo_path = Path(repo_value).expanduser()
+        if not repo_path.is_absolute():
+            repo_path = path.parent / repo_path
+        repo = str(repo_path.resolve())
+        if not isinstance(kind, str) or kind not in SCOPE_MANIFEST_KINDS:
+            supported = ", ".join(sorted(SCOPE_MANIFEST_KINDS))
+            raise ScopeError(f"{label} kind must be one of: {supported}")
+        if kind == "uncommitted":
+            if value is not None:
+                raise ScopeError(f"{label} uncommitted scope cannot set value")
+            scope = ReviewScope(kind)
+        else:
+            if not isinstance(value, str) or not value.strip():
+                raise ScopeError(f"{label} {kind} scope requires value")
+            scope = ReviewScope(kind, value)
+        if repo in seen:
+            raise ScopeError(f"{label} duplicates an earlier repository")
+        seen.add(repo)
+        entries.append(ManifestScope(repo, scope))
+    return entries
+
+
+def combine_metrics(items: Sequence[Tuple[str, "DiffMetrics"]]) -> "DiffMetrics":
+    paths: List[str] = []
+    warnings: List[str] = []
+    for repo, metrics in items:
+        paths.extend(f"{repo}:{path}" for path in metrics.paths)
+        warnings.extend(metrics.warnings)
+    return DiffMetrics(
+        changed_files=sum(metrics.changed_files for _, metrics in items),
+        changed_lines=sum(metrics.changed_lines for _, metrics in items),
+        untracked_bytes=sum(metrics.untracked_bytes for _, metrics in items),
+        paths=paths,
+        warnings=list(dict.fromkeys(warnings)),
+    )
 
 
 @dataclass

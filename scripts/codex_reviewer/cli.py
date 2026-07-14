@@ -13,6 +13,7 @@ from .catalog import DEFAULT_PRESET, PRESET_NAMES
 from .reviewer import (
     DEFAULT_MAX_CHANGED_FILES,
     DEFAULT_MAX_DIFF_LINES,
+    DEFAULT_IDLE_TIMEOUT,
     DEFAULT_TIMEOUT,
     CodexReviewer,
     run_doctor,
@@ -114,10 +115,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--result-json", help="Write the additional v2 result envelope to this file."
     )
     parser.add_argument(
+        "--include-events",
+        action="store_true",
+        help="Include sanitized JSONL events in --result-json (raw JSONL still belongs in --output).",
+    )
+    parser.add_argument(
         "--schema", dest="schema_file", help="JSON Schema for generic final output."
     )
     parser.add_argument(
         "--timeout", type=int, default=DEFAULT_TIMEOUT, help="Timeout in seconds."
+    )
+    parser.add_argument(
+        "--hard-timeout",
+        type=int,
+        help="Absolute runtime limit; overrides the compatible --timeout value.",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=DEFAULT_IDLE_TIMEOUT,
+        help="Terminate when Codex emits no stdout or stderr activity for this many seconds; 0 disables it.",
     )
     parser.add_argument(
         "--quick",
@@ -140,6 +157,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--review-range",
         help="Generic Git range used only for preflight sizing; it never rewrites the review prompt.",
+    )
+    parser.add_argument(
+        "--scope-manifest",
+        help="JSON manifest declaring every repository and Git scope for a generic review.",
     )
     parser.add_argument(
         "--allow-large-diff",
@@ -185,6 +206,20 @@ def build_parser() -> argparse.ArgumentParser:
             "skill discovery, skills, or plugins."
         ),
     )
+    context_group = parser.add_mutually_exclusive_group()
+    context_group.add_argument(
+        "--minimal-context",
+        dest="minimal_context",
+        action="store_true",
+        help="Disable Codex plugins, apps, and multi-agent features for a lean review session.",
+    )
+    context_group.add_argument(
+        "--full-context",
+        dest="minimal_context",
+        action="store_false",
+        help="Keep Codex plugins, apps, and multi-agent features available.",
+    )
+    parser.set_defaults(minimal_context=True)
     parser.add_argument(
         "--search",
         action="store_true",
@@ -259,7 +294,11 @@ def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
                     )
             except OSError:
                 pass
-    input_values = [value for value in (args.schema_file, *args.images) if value]
+    input_values = [
+        value
+        for value in (args.schema_file, args.scope_manifest, *args.images)
+        if value
+    ]
     resolved_inputs = {
         str(Path(value).expanduser().resolve()) for value in input_values
     }
@@ -276,7 +315,7 @@ def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
     collisions = sorted(set(collisions))
     if collisions:
         return (
-            "Output paths must not overwrite --schema or --image inputs: "
+            "Output paths must not overwrite --schema, --scope-manifest, or --image inputs: "
             + ", ".join(collisions)
         )
     return None
@@ -296,7 +335,8 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         cwd=args.cwd,
         add_dirs=args.add_dirs,
         schema_file=args.schema_file,
-        timeout=args.timeout,
+        timeout=args.hard_timeout if args.hard_timeout is not None else args.timeout,
+        idle_timeout=args.idle_timeout,
         skip_git_repo_check=args.skip_git_repo_check,
         reasoning_effort=args.reasoning_effort,
         output_file=args.output,
@@ -309,6 +349,7 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         context_window=args.context_window,
         auto_compact_token_limit=args.auto_compact_token_limit,
         review_range=review_range,
+        scope_manifest=args.scope_manifest,
         allow_large_diff=args.allow_large_diff,
         max_changed_files=args.max_changed_files,
         max_diff_lines=args.max_diff_lines,
@@ -319,6 +360,7 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         strict_config=args.strict_config,
         fast=args.fast,
         dry_run=args.dry_run,
+        minimal_context=args.minimal_context,
         update_check=not args.no_update_check,
         force_update_check=args.force_update_check,
     )
@@ -337,6 +379,20 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
         return _error(
             args.review_type,
             "--profile cannot be combined with --ignore-user-config or --isolated",
+        )
+    if args.scope_manifest and args.review_range:
+        return _error(
+            args.review_type,
+            "--scope-manifest cannot be combined with --review-range",
+        )
+    if args.scope_manifest and args.review_type in {
+        "native-review",
+        "structured-review",
+        "doctor",
+    }:
+        return _error(
+            args.review_type,
+            "--scope-manifest is only valid for generic review modes",
         )
 
     if args.review_type == "doctor":
@@ -412,7 +468,45 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
     return _error(args.review_type, f"Unknown review type: {args.review_type}")
 
 
-def _write_result(path_value: str, result: Mapping[str, object]) -> Optional[str]:
+def _public_result_envelope(
+    result: Mapping[str, object], *, include_events: bool
+) -> Dict[str, object]:
+    keys = (
+        "schema_version",
+        "success",
+        "mode",
+        "binary",
+        "version",
+        "install_method",
+        "update",
+        "scope",
+        "model",
+        "effort",
+        "usage",
+        "timeout",
+        "idle_timeout",
+        "hard_timeout",
+        "timed_out",
+        "timeout_reason",
+        "exit_code",
+        "service_tier",
+        "warnings",
+        "sanitized_command",
+        "final_result",
+        "partial_progress",
+        "error",
+        "structured_result",
+        "diagnostics",
+    )
+    envelope = {key: result[key] for key in keys if key in result}
+    if include_events and "events" in result:
+        envelope["events"] = result["events"]
+    return envelope
+
+
+def _write_result(
+    path_value: str, result: Mapping[str, object], *, include_events: bool = False
+) -> Optional[str]:
     path = Path(path_value).expanduser()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -424,7 +518,10 @@ def _write_result(path_value: str, result: Mapping[str, object]) -> Optional[str
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 descriptor = -1
-                handle.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+                envelope = _public_result_envelope(
+                    result, include_events=include_events
+                )
+                handle.write(json.dumps(envelope, ensure_ascii=False, indent=2) + "\n")
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -441,7 +538,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args = parser.parse_intermixed_args(list(argv))
     result = run_from_args(args)
     if args.result_json:
-        write_error = _write_result(args.result_json, result)
+        write_error = _write_result(
+            args.result_json, result, include_events=args.include_events
+        )
         if write_error:
             print(f"Error: {write_error}", file=sys.stderr)
             return 1

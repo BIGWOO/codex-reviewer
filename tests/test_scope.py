@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -17,10 +18,45 @@ from codex_reviewer.scope import (  # noqa: E402
     ReviewScope,
     developer_git_environment,
     large_diff_error,
+    load_scope_manifest,
 )
 
 
 class GitScopeTests(unittest.TestCase):
+    def test_scope_manifest_resolves_relative_repositories_and_rejects_duplicates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            manifest = root / "scope.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "scopes": [{"repo": "repo", "kind": "uncommitted"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            entries = load_scope_manifest(str(manifest))
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "scopes": [
+                            {"repo": str(repo), "kind": "uncommitted"},
+                            {"repo": str(repo), "kind": "base", "value": "main"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicates"):
+                load_scope_manifest(str(manifest))
+
+        self.assertEqual(entries[0].repo, str(repo.resolve()))
+
     def test_uncommitted_merges_staged_unstaged_untracked_and_binary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = init_git_fixture(Path(tmp) / "repo")

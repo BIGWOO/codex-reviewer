@@ -47,6 +47,7 @@ class CommandBuilder:
         context_window: Optional[int] = None,
         auto_compact_token_limit: Optional[int] = None,
         git_path: Optional[str] = None,
+        minimal_context: bool = True,
     ):
         if not binary.path:
             raise ValueError(binary.error or "Codex CLI not found")
@@ -70,6 +71,7 @@ class CommandBuilder:
         self.context_window = context_window
         self.auto_compact_token_limit = auto_compact_token_limit
         self.git_path = git_path
+        self.minimal_context = minimal_context
 
     def generic(self, prompt: str) -> CommandSpec:
         if not prompt.strip():
@@ -120,6 +122,17 @@ class CommandBuilder:
         ]
         if self.service_tier:
             argv.extend(["--config", f"service_tier={json.dumps(self.service_tier)}"])
+        if self.minimal_context:
+            argv.extend(
+                [
+                    "--disable",
+                    "plugins",
+                    "--disable",
+                    "apps",
+                    "--disable",
+                    "multi_agent",
+                ]
+            )
         if self.context_window is not None:
             argv.extend(["--config", f"model_context_window={self.context_window}"])
         if self.auto_compact_token_limit is not None:
@@ -176,9 +189,15 @@ class CommandBuilder:
 
     def _spec(self, argv: Sequence[str], stdin_payload: Optional[str]) -> CommandSpec:
         environment: Dict[str, str] = developer_git_environment(self.git_path)
+        display_argv = [
+            'shell_environment_policy.set.PATH="<injected>"'
+            if argument.startswith("shell_environment_policy.set.PATH=")
+            else argument
+            for argument in argv
+        ]
         return CommandSpec(
             argv=tuple(argv),
             stdin_payload=stdin_payload,
             environment=environment,
-            display_command=shlex.join(argv),
+            display_command=shlex.join(display_argv),
         )

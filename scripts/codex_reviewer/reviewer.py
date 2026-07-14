@@ -26,10 +26,13 @@ from .runner import CodexProcessRunner
 from .scope import (
     DiffMetrics,
     GitInspector,
+    ManifestScope,
     ReviewScope,
     ScopeError,
+    combine_metrics,
     developer_git_environment,
     large_diff_error,
+    load_scope_manifest,
 )
 from .updates import prepare_codex_binary
 
@@ -37,8 +40,11 @@ from .updates import prepare_codex_binary
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_TIMEOUT = 300
+DEFAULT_IDLE_TIMEOUT = 180
 DEFAULT_MAX_CHANGED_FILES = 40
 DEFAULT_MAX_DIFF_LINES = 3000
+MAX_EXPLICIT_FILES = 15
+MAX_EXPLICIT_LINES = 1200
 UNCOMMITTED_FILE_WARNING_THRESHOLD = 10
 VERIFIED_CODEX_VERSION = MIN_CODEX_VERSION
 BUNDLED_SCHEMA = (
@@ -174,6 +180,7 @@ class CodexReviewer:
         add_dirs: Optional[Sequence[str]] = None,
         schema_file: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
+        idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
         skip_git_repo_check: bool = False,
         reasoning_effort: Optional[str] = None,
         output_file: Optional[str] = None,
@@ -186,6 +193,7 @@ class CodexReviewer:
         context_window: Optional[int] = None,
         auto_compact_token_limit: Optional[int] = None,
         review_range: Optional[str] = None,
+        scope_manifest: Optional[str] = None,
         allow_large_diff: bool = False,
         max_changed_files: int = DEFAULT_MAX_CHANGED_FILES,
         max_diff_lines: int = DEFAULT_MAX_DIFF_LINES,
@@ -197,6 +205,7 @@ class CodexReviewer:
         strict_config: bool = False,
         fast: bool = False,
         dry_run: bool = False,
+        minimal_context: bool = True,
         update_check: bool = True,
         force_update_check: bool = False,
     ):
@@ -212,6 +221,7 @@ class CodexReviewer:
             str(Path(schema_file).expanduser().resolve()) if schema_file else None
         )
         self.timeout = timeout
+        self.idle_timeout = idle_timeout
         self.skip_git_repo_check = skip_git_repo_check
         self.output_file = output_file
         self.last_message_output = last_message_output
@@ -225,6 +235,9 @@ class CodexReviewer:
         self.context_window = context_window
         self.auto_compact_token_limit = auto_compact_token_limit
         self.review_range = review_range
+        self.scope_manifest = (
+            str(Path(scope_manifest).expanduser().resolve()) if scope_manifest else None
+        )
         self.allow_large_diff = allow_large_diff
         self.max_changed_files = max_changed_files
         self.max_diff_lines = max_diff_lines
@@ -234,6 +247,7 @@ class CodexReviewer:
         self.strict_config = strict_config
         self.fast = fast
         self.dry_run = dry_run
+        self.minimal_context = minimal_context
         self.binary, self.update_outcome = prepare_codex_binary(
             codex_bin,
             check_updates=update_check,
@@ -243,6 +257,8 @@ class CodexReviewer:
         self.selection: Optional[ModelSelection] = None
         self._base_warnings: List[str] = list(self.update_outcome.warnings)
         self.git_path: Optional[str] = None
+        self._resource_roots: List[str] = []
+        self._manifest_scopes: List[ManifestScope] = []
 
     def _with_runtime(self, result: Dict[str, object]) -> Dict[str, object]:
         result["install_method"] = self.binary.install_method
@@ -306,6 +322,8 @@ class CodexReviewer:
     def _validate_capabilities(self, *, native: bool) -> Optional[str]:
         if self.timeout <= 0:
             return "--timeout must be greater than zero"
+        if self.idle_timeout < 0:
+            return "--idle-timeout cannot be negative"
         if self.max_changed_files < 0 or self.max_diff_lines < 0:
             return "Large-diff thresholds cannot be negative"
         if self.cwd and not Path(self.cwd).is_dir():
@@ -401,6 +419,40 @@ class CodexReviewer:
     ) -> Tuple[Optional[Dict[str, object]], List[str], Optional[str]]:
         warnings = list(self._base_warnings)
         metrics: Optional[DiffMetrics] = None
+        root = str(Path(self.cwd or os.getcwd()).expanduser().resolve())
+        self._resource_roots = list(dict.fromkeys([root, *self.add_dirs]))
+        self._manifest_scopes = []
+        if self.scope_manifest:
+            if scope.kind != "custom":
+                return (
+                    None,
+                    warnings,
+                    "--scope-manifest is only valid for generic custom scopes",
+                )
+            try:
+                self._manifest_scopes = load_scope_manifest(self.scope_manifest)
+                measured: List[Tuple[str, DiffMetrics]] = []
+                manifest_payload: List[Dict[str, object]] = []
+                for entry in self._manifest_scopes:
+                    inspector = GitInspector(entry.repo)
+                    if self.git_path is None:
+                        self.git_path = inspector.git_path
+                    entry_metrics = inspector.metrics(entry.scope)
+                    measured.append((entry.repo, entry_metrics))
+                    warnings.extend(inspector.environment_warnings)
+                    warnings.extend(entry_metrics.warnings)
+                    item: Dict[str, object] = dict(entry.to_dict())
+                    item["metrics"] = entry_metrics.to_dict()
+                    manifest_payload.append(item)
+                    if entry.repo not in self._resource_roots:
+                        self._resource_roots.append(entry.repo)
+                    if entry.repo != root and entry.repo not in self.add_dirs:
+                        self.add_dirs.append(entry.repo)
+                metrics = combine_metrics(measured)
+            except ScopeError as exc:
+                return None, warnings, str(exc)
+        else:
+            manifest_payload = []
         use_review_range = bool(self.review_range and scope.kind == "custom")
         sizing_scope = (
             ReviewScope("range", self.review_range) if use_review_range else scope
@@ -409,7 +461,7 @@ class CodexReviewer:
             warnings.append(
                 "--review-range is ignored for native/structured sizing; the actual review scope was measured"
             )
-        if sizing_scope.kind != "custom":
+        if metrics is None and sizing_scope.kind != "custom":
             try:
                 inspector = self._inspector()
                 metrics = inspector.metrics(sizing_scope)
@@ -424,24 +476,66 @@ class CodexReviewer:
                     warnings.append(
                         f"--uncommitted includes {metrics.changed_files} files; consider a narrower task or module scope"
                     )
-                if not self.allow_large_diff:
-                    error = large_diff_error(
-                        metrics,
-                        sizing_scope,
-                        self.max_changed_files,
-                        self.max_diff_lines,
-                    )
-                    if error:
-                        return None, warnings, error
-        else:
+        elif metrics is None:
             # Resolve developer Git for every review so the child shell never falls back
             # to Apple's /usr/bin/git shim inside a read-only sandbox.
             inspector = self._inspector()
             warnings.extend(inspector.environment_warnings)
 
+        assert self.selection is not None
+        if self.preset == "deep" and scope.kind == "custom" and metrics is None:
+            return (
+                None,
+                warnings,
+                "Deep custom review requires complete preflight sizing via --scope-manifest or --review-range",
+            )
+        if self.selection.effort == "max":
+            if self.allow_large_diff:
+                return (
+                    None,
+                    warnings,
+                    "Explicit max cannot be combined with --allow-large-diff",
+                )
+            if metrics is None:
+                return (
+                    None,
+                    warnings,
+                    "Explicit max requires a completely sized Git scope",
+                )
+            scope_repositories = (
+                {entry.repo for entry in self._manifest_scopes}
+                if self._manifest_scopes
+                else set(self._resource_roots)
+            )
+            if len(scope_repositories) != 1:
+                return None, warnings, "Explicit max is limited to one repository"
+            if (
+                metrics.changed_files > MAX_EXPLICIT_FILES
+                or metrics.changed_lines > MAX_EXPLICIT_LINES
+            ):
+                return (
+                    None,
+                    warnings,
+                    "Explicit max is limited to "
+                    f"{MAX_EXPLICIT_FILES} files and {MAX_EXPLICIT_LINES} changed lines; "
+                    f"measured {metrics.changed_files} files and {metrics.changed_lines} lines",
+                )
+
+        if metrics is not None and not self.allow_large_diff:
+            error = large_diff_error(
+                metrics,
+                sizing_scope,
+                self.max_changed_files,
+                self.max_diff_lines,
+            )
+            if error:
+                return None, warnings, error
+
         payload: Dict[str, object] = dict(scope.to_dict())
         if metrics is not None:
             payload["metrics"] = metrics.to_dict()
+        if manifest_payload:
+            payload["manifest"] = manifest_payload
         if use_review_range:
             payload["preflight_range"] = self.review_range
         return payload, list(dict.fromkeys(warnings)), None
@@ -469,6 +563,7 @@ class CodexReviewer:
             context_window=self.context_window,
             auto_compact_token_limit=self.auto_compact_token_limit,
             git_path=self.git_path,
+            minimal_context=self.minimal_context,
         )
 
     def _execute(
@@ -497,6 +592,8 @@ class CodexReviewer:
                     model=self.selection.model,
                     effort=self.selection.effort,
                     timeout=self.timeout,
+                    idle_timeout=self.idle_timeout,
+                    hard_timeout=self.timeout,
                     service_tier="fast" if self.fast else None,
                     warnings=list(warnings),
                     command=spec.display_command,
@@ -507,6 +604,7 @@ class CodexReviewer:
         runner = CodexProcessRunner(
             self.binary,
             timeout=self.timeout,
+            idle_timeout=self.idle_timeout,
             json_output=self.json_output,
             output_file=output_file or self.output_file,
             last_message_output=self.last_message_output,
@@ -522,15 +620,7 @@ class CodexReviewer:
             effort=self.selection.effort,
             service_tier="fast" if self.fast else None,
             warnings=warnings,
-            lock_key=json.dumps(
-                {
-                    "cwd": str(Path(self.cwd or os.getcwd()).expanduser().resolve()),
-                    "scope_kind": scope_payload.get("kind"),
-                    "scope_value": scope_payload.get("value"),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
+            lock_keys=[f"root:{root}" for root in self._resource_roots],
         )
         result = self._with_runtime(result)
         if structured and result.get("success"):
@@ -567,6 +657,8 @@ class CodexReviewer:
                 model=selection.model if selection else self.explicit_model,
                 effort=selection.effort if selection else self.explicit_effort,
                 timeout=self.timeout,
+                idle_timeout=self.idle_timeout,
+                hard_timeout=self.timeout,
                 service_tier="fast" if self.fast else None,
                 warnings=list(self._base_warnings),
                 error=message,
@@ -698,6 +790,15 @@ class CodexReviewer:
                 "generic", scope_error or "Could not resolve review scope", scope
             )
         full_prompt = prompt
+        if self._manifest_scopes:
+            declared = "\n".join(
+                f"- {entry.repo}: {entry.scope.prompt_instruction()}"
+                for entry in self._manifest_scopes
+            )
+            full_prompt += (
+                "\n\nAuthoritative review scope manifest:\n"
+                f"{declared}\nDo not review changes outside these declared scopes."
+            )
         if self.instructions:
             full_prompt += f"\n\nAdditional review instructions:\n{self.instructions}"
         spec = self._builder().generic(full_prompt)
@@ -885,13 +986,17 @@ def run_doctor(
                     for check_id, item in relevant.items()
                     if item.get("status") not in {"ok", "pass"}
                 ]
+                review_health_status = (
+                    "fail" if relevant_failed or not relevant else "pass"
+                )
                 detail = {
-                    "overall_status": doctor_payload.get("overallStatus"),
+                    "review_health_status": review_health_status,
+                    "source_overall_status": doctor_payload.get("overallStatus"),
                     "relevant_checks": relevant,
                 }
                 add(
                     "auth_config",
-                    "fail" if relevant_failed or not relevant else "pass",
+                    review_health_status,
                     detail,
                 )
                 if result.returncode != 0 and not relevant_failed:
