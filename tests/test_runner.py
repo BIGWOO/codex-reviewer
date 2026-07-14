@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stderr
@@ -53,6 +54,17 @@ class JsonlHelpersTests(unittest.TestCase):
         )
         self.assertIsNone(parse_jsonl_line("not-json"))
 
+    def test_extract_final_requires_turn_completed(self) -> None:
+        events = [
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "still working"},
+            },
+        ]
+
+        self.assertIsNone(extract_final(events))
+
     def test_sanitize_command_redacts_sensitive_values(self) -> None:
         command = sanitize_command(
             ["codex", "exec", "secret instructions"],
@@ -63,6 +75,133 @@ class JsonlHelpersTests(unittest.TestCase):
 
 
 class ProcessRunnerTests(unittest.TestCase):
+    def test_skill_budget_item_is_warning_not_terminal_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = make_fake_codex(root)
+            binary = CodexBinary.discover(str(fake))
+            runner = CodexProcessRunner(
+                binary,
+                timeout=5,
+                env={**os.environ, "FAKE_CODEX_SKILL_BUDGET_WARNING": "1"},
+            )
+            captured = io.StringIO()
+            with redirect_stderr(captured):
+                result = runner.run(
+                    [str(fake), "exec", "--json", "-"],
+                    stdin_payload="review",
+                    mode="generic",
+                    scope={"kind": "uncommitted"},
+                    model="gpt-5.6-sol",
+                    effort="high",
+                    service_tier=None,
+                )
+
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertIn("skills context budget", " ".join(result["warnings"]))
+        self.assertIn("[codex-review] warning:", captured.getvalue())
+        self.assertNotIn("internal item error", captured.getvalue())
+
+    def test_jsonl_without_turn_completed_is_not_successful(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = make_fake_codex(root)
+            binary = CodexBinary.discover(str(fake))
+            runner = CodexProcessRunner(
+                binary,
+                timeout=5,
+                env={**os.environ, "FAKE_CODEX_OMIT_TURN_COMPLETED": "1"},
+            )
+            result = runner.run(
+                [str(fake), "exec", "--json", "-"],
+                stdin_payload="review",
+                mode="generic",
+                scope={"kind": "uncommitted"},
+                model="gpt-5.6-sol",
+                effort="high",
+                service_tier=None,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("turn.completed", result["error"])
+        self.assertIsNone(result["final_result"])
+
+    @unittest.skipIf(os.name == "nt", "single-flight lock is POSIX-only")
+    def test_same_scope_cannot_run_concurrently_and_lock_is_released(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = make_fake_codex(root)
+            binary = CodexBinary.discover(str(fake))
+            log_path = root / "calls.json"
+            lock_key = f"{root}:uncommitted"
+            first_runner = CodexProcessRunner(
+                binary,
+                timeout=5,
+                env={
+                    **os.environ,
+                    "FAKE_CODEX_LOG": str(log_path),
+                    "FAKE_CODEX_SLEEP": "1",
+                },
+            )
+            second_runner = CodexProcessRunner(
+                binary,
+                timeout=5,
+                env={**os.environ, "FAKE_CODEX_LOG": str(log_path)},
+            )
+            first_results: list[dict] = []
+
+            def run_first() -> None:
+                first_results.append(
+                    first_runner.run(
+                        [str(fake), "exec", "--json", "-"],
+                        stdin_payload="review",
+                        mode="generic",
+                        scope={"kind": "uncommitted"},
+                        model="gpt-5.6-sol",
+                        effort="high",
+                        service_tier=None,
+                        lock_key=lock_key,
+                    )
+                )
+
+            thread = threading.Thread(target=run_first)
+            thread.start()
+            deadline = time.monotonic() + 3
+            while not log_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+
+            started = time.monotonic()
+            duplicate = second_runner.run(
+                [str(fake), "exec", "--json", "-"],
+                stdin_payload="review",
+                mode="generic",
+                scope={"kind": "uncommitted"},
+                model="gpt-5.5",
+                effort="xhigh",
+                service_tier=None,
+                lock_key=lock_key,
+            )
+            duplicate_elapsed = time.monotonic() - started
+            thread.join(timeout=5)
+            after_release = second_runner.run(
+                [str(fake), "exec", "--json", "-"],
+                stdin_payload="review",
+                mode="generic",
+                scope={"kind": "uncommitted"},
+                model="gpt-5.5",
+                effort="xhigh",
+                service_tier=None,
+                lock_key=lock_key,
+            )
+            executions = read_fake_log(log_path)
+
+        self.assertTrue(first_results[0]["success"], first_results[0].get("error"))
+        self.assertFalse(duplicate["success"])
+        self.assertIn("already running", duplicate["error"])
+        self.assertLess(duplicate_elapsed, 1)
+        self.assertTrue(after_release["success"], after_release.get("error"))
+        self.assertEqual(len(executions), 2)
+
     def test_prompt_is_stdin_only_and_result_never_contains_it(self) -> None:
         secret = "TOP-SECRET-REVIEW-INSTRUCTIONS"
         with tempfile.TemporaryDirectory() as tmp:
@@ -198,8 +337,9 @@ class ProcessRunnerTests(unittest.TestCase):
             last_content = last_path.read_text(encoding="utf-8")
             last_mode = last_path.stat().st_mode & 0o777
 
-        self.assertTrue(result["success"])
+        self.assertFalse(result["success"])
         self.assertIsNone(result["final_result"])
+        self.assertIn("final result", result["error"])
         self.assertTrue(last_exists)
         self.assertEqual(last_content, "")
         self.assertEqual(last_mode, 0o600)

@@ -522,6 +522,15 @@ class CodexReviewer:
             effort=self.selection.effort,
             service_tier="fast" if self.fast else None,
             warnings=warnings,
+            lock_key=json.dumps(
+                {
+                    "cwd": str(Path(self.cwd or os.getcwd()).expanduser().resolve()),
+                    "scope_kind": scope_payload.get("kind"),
+                    "scope_value": scope_payload.get("value"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         )
         result = self._with_runtime(result)
         if structured and result.get("success"):

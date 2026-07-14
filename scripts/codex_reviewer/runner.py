@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -9,6 +10,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -20,6 +22,12 @@ from .result import ReviewResult
 
 HEARTBEAT_SECONDS = 30
 ERROR_DETAIL_LIMIT = 8000
+ITEM_WARNING_DETAIL_LIMIT = 500
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows best effort
+    fcntl = None  # type: ignore[assignment]
 
 
 def sanitize_command(cmd: Sequence[str], sensitive_values: Iterable[str] = ()) -> str:
@@ -39,7 +47,17 @@ def parse_jsonl_line(line: str) -> Optional[Dict[str, object]]:
 
 
 def extract_final(events: Sequence[Mapping[str, object]]) -> Optional[str]:
-    for event in reversed(events):
+    completion_index = next(
+        (
+            index
+            for index in range(len(events) - 1, -1, -1)
+            if events[index].get("type") == "turn.completed"
+        ),
+        None,
+    )
+    if completion_index is None:
+        return None
+    for event in reversed(events[: completion_index + 1]):
         if event.get("type") == "item.completed":
             item = event.get("item")
             if isinstance(item, Mapping) and item.get("type") == "agent_message":
@@ -54,6 +72,26 @@ def extract_final(events: Sequence[Mapping[str, object]]) -> Optional[str]:
             if nested:
                 return nested
     return None
+
+
+def has_turn_completed(events: Sequence[Mapping[str, object]]) -> bool:
+    return any(event.get("type") == "turn.completed" for event in events)
+
+
+def extract_item_warnings(
+    events: Sequence[Mapping[str, object]],
+) -> List[str]:
+    warnings: List[str] = []
+    for event in events:
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not isinstance(item, Mapping) or item.get("type") != "error":
+            continue
+        message = item.get("message")
+        if isinstance(message, str) and message and message not in warnings:
+            warnings.append(message)
+    return warnings
 
 
 def extract_usage(
@@ -78,14 +116,6 @@ def extract_error(events: Sequence[Mapping[str, object]]) -> Optional[str]:
                 return error
             if isinstance(event.get("message"), str):
                 return event["message"]  # type: ignore[return-value]
-        if event_type == "item.completed":
-            item = event.get("item")
-            if (
-                isinstance(item, Mapping)
-                and item.get("type") == "error"
-                and isinstance(item.get("message"), str)
-            ):
-                return item["message"]  # type: ignore[return-value]
     return None
 
 
@@ -115,6 +145,8 @@ def _progress_event(event: Mapping[str, object]) -> Optional[str]:
         return "turn started"
     if event_type == "turn.completed":
         return "turn completed"
+    if event_type == "turn.failed":
+        return "turn failed"
     if event_type != "item.completed":
         return None
     item = event.get("item")
@@ -124,11 +156,16 @@ def _progress_event(event: Mapping[str, object]) -> Optional[str]:
     if item_type == "command_execution":
         return f"command completed exit={item.get('exit_code')}"
     if item_type == "agent_message":
-        return "final message received"
+        return "agent message received; waiting for turn.completed"
     if item_type == "reasoning":
         return "reasoning step completed"
     if item_type == "error":
-        return "Codex reported an internal item error"
+        message = item.get("message")
+        if isinstance(message, str) and message:
+            if len(message) > ITEM_WARNING_DETAIL_LIMIT:
+                message = message[: ITEM_WARNING_DETAIL_LIMIT - 3] + "..."
+            return f"warning: {message}"
+        return "warning: Codex reported a non-terminal item error"
     return f"{item_type or 'item'} completed"
 
 
@@ -165,6 +202,7 @@ class CodexProcessRunner:
         warnings: Optional[Sequence[str]] = None,
         sensitive_values: Iterable[str] = (),
         stdin_payload: Optional[str] = None,
+        lock_key: Optional[str] = None,
     ) -> Dict[str, object]:
         sensitive = tuple(value for value in sensitive_values if value)
         if stdin_payload:
@@ -187,6 +225,8 @@ class CodexProcessRunner:
         timed_out = False
         stdin_thread: Optional[threading.Thread] = None
         stdin_errors: List[str] = []
+        lock_descriptor: Optional[int] = None
+        runtime_warnings = list(warnings or [])
 
         def read_stream(stream, stream_name: str) -> None:
             try:
@@ -207,6 +247,27 @@ class CodexProcessRunner:
                     pass
 
         try:
+            if lock_key:
+                lock_descriptor, lock_error = self._acquire_execution_lock(lock_key)
+                if lock_error:
+                    return ReviewResult(
+                        success=False,
+                        mode=mode,
+                        binary=self.binary.path,
+                        version=self.binary.version_string,
+                        scope=scope,
+                        model=model,
+                        effort=effort,
+                        timeout=self.timeout,
+                        service_tier=service_tier,
+                        warnings=runtime_warnings,
+                        command=sanitized,
+                        error=lock_error,
+                    ).to_dict()
+                if lock_descriptor is None:
+                    runtime_warnings.append(
+                        "Single-flight locking is unavailable on this platform"
+                    )
             if (
                 output_path
                 and last_message_path
@@ -315,16 +376,29 @@ class CodexProcessRunner:
                     file=sys.stderr,
                     flush=True,
                 )
+            turn_completed = has_turn_completed(events)
             final = (
                 extract_final(events) if self.json_output else output.strip() or None
             )
-            if not final and self.last_message_output:
+            if (
+                not final
+                and self.last_message_output
+                and (not self.json_output or turn_completed)
+            ):
                 final = self._read_last_message(
                     Path(self.last_message_output).expanduser()
                 )
             usage = extract_usage(events)
             exit_code = process.returncode
-            success = exit_code == 0 and not timed_out
+            terminal_error = extract_error(events)
+            success = (
+                exit_code == 0
+                and not timed_out
+                and not stdin_errors
+                and terminal_error is None
+                and (not self.json_output or turn_completed)
+                and final is not None
+            )
             error = None
             if timed_out:
                 suffix = (
@@ -338,12 +412,23 @@ class CodexProcessRunner:
             elif exit_code != 0:
                 error = self._error_detail(stderr, exit_code, events)
             elif stdin_errors:
-                success = False
                 error = f"Failed to send the complete review prompt: {stdin_errors[-1]}"
+            elif terminal_error:
+                error = terminal_error
+            elif self.json_output and not turn_completed:
+                error = "Codex JSONL ended without a terminal turn.completed event"
+            elif final is None:
+                error = "Codex review completed without a final result"
+            for warning in extract_item_warnings(events):
+                if warning not in runtime_warnings:
+                    runtime_warnings.append(warning)
             final = self._redact_text(final, sensitive) if final else None
             if final and self.last_message_output:
                 self._write_private(Path(self.last_message_output).expanduser(), final)
             error = self._redact_text(error, sensitive) if error else None
+            safe_warnings = [
+                self._redact_text(warning, sensitive) for warning in runtime_warnings
+            ]
             safe_output = self._redact_text(output, sensitive)
             safe_events = [self._redact_payload(event, sensitive) for event in events]
 
@@ -365,7 +450,7 @@ class CodexProcessRunner:
                 timed_out=timed_out,
                 exit_code=exit_code,
                 service_tier=service_tier,
-                warnings=list(warnings or []),
+                warnings=safe_warnings,
                 command=sanitized,
                 final=final,
                 error=error,
@@ -407,6 +492,7 @@ class CodexProcessRunner:
         finally:
             if output_handle:
                 output_handle.close()
+            self._release_execution_lock(lock_descriptor)
 
     def _consume_line(
         self,
@@ -433,7 +519,56 @@ class CodexProcessRunner:
         events.append(event)
         progress = _progress_event(event)
         if progress:
-            print(f"[codex-review] {progress}", file=sys.stderr, flush=True)
+            safe_progress = self._redact_text(progress, sensitive_values)
+            print(f"[codex-review] {safe_progress}", file=sys.stderr, flush=True)
+
+    @staticmethod
+    def _acquire_execution_lock(lock_key: str) -> Tuple[Optional[int], Optional[str]]:
+        if fcntl is None:
+            return None, None
+        digest = hashlib.sha256(lock_key.encode("utf-8")).hexdigest()
+        lock_directory = Path(tempfile.gettempdir()) / "codex-reviewer-locks"
+        lock_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            lock_directory.chmod(0o700)
+        except OSError:
+            pass
+        lock_path = lock_directory / f"{digest}.lock"
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(lock_path, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                owner = os.read(descriptor, 64).decode("ascii", errors="ignore").strip()
+                owner_detail = f" (owner PID {owner})" if owner.isdigit() else ""
+                os.close(descriptor)
+                return None, (
+                    "Another Codex review is already running for this repository "
+                    f"and scope{owner_detail}; wait for it to finish or terminate "
+                    "it before retrying"
+                )
+            os.ftruncate(descriptor, 0)
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+            os.fsync(descriptor)
+            return descriptor, None
+        except Exception:
+            os.close(descriptor)
+            raise
+
+    @staticmethod
+    def _release_execution_lock(descriptor: Optional[int]) -> None:
+        if descriptor is None:
+            return
+        try:
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _terminate_process_group(process: subprocess.Popen[str]) -> None:

@@ -186,23 +186,38 @@ def main() -> int:
             {"type": "thread.started", "thread_id": "fake-thread"},
             {"type": "turn.started"},
         ]
+        if os.environ.get("FAKE_CODEX_SKILL_BUDGET_WARNING"):
+            events.append(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item_warning",
+                        "type": "error",
+                        "message": (
+                            "Skill descriptions were shortened to fit the 2% "
+                            "skills context budget. Codex can still see every skill."
+                        ),
+                    },
+                }
+            )
         if exit_code:
             events.append(
                 {"type": "turn.failed", "error": {"message": "fake inference failure"}}
             )
         elif not os.environ.get("FAKE_CODEX_NO_FINAL"):
-            events.extend(
-                [
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": final_message},
-                    },
+            events.append(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": final_message},
+                }
+            )
+            if not os.environ.get("FAKE_CODEX_OMIT_TURN_COMPLETED"):
+                events.append(
                     {
                         "type": "turn.completed",
                         "usage": {"input_tokens": 101, "output_tokens": 23},
-                    },
-                ]
-            )
+                    }
+                )
         else:
             events.append(
                 {
