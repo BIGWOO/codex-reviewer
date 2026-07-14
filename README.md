@@ -112,6 +112,18 @@ python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
   --dry-run
 ```
 
+## 與 Codex 子代理的差異
+
+| | Codex 子代理審查 | `$codex-reviewer` |
+|---|---|---|
+| 定位 | 主任務內平行分工 | 交付前的獨立品質閘門 |
+| 執行 | 多個子代理執行緒，由主代理彙整 | 獨立、唯讀的 Codex CLI 程序 |
+| 控制 | 通常繼承主任務的權限與設定 | 固定範圍、模型、推理強度、逾時與輸出契約 |
+| 成本 | 每個子代理各自消耗 token | 預設單一 reviewer，成本較可預測 |
+| 適用 | 規格、標準、測試等過程檢查 | 最終差異、正式驗收與可稽核結果 |
+
+兩者可以互補，但不要重複審查相同面向。若主任務已用子代理檢查規格或標準，最後只讓 `$codex-reviewer` 審查最終差異或尚未覆蓋的風險。此 skill 預設啟用 `--minimal-context`，不會在 reviewer 內再次展開子代理。
+
 ## Modes
 
 | Mode | Use when |
