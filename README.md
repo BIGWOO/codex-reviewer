@@ -128,12 +128,14 @@ Native review 在 Codex CLI 0.144.1 不會套用 output schema、images 或 live
 
 | Preset | Primary | Fallback | Typical use |
 |---|---|---|---|
-| `quick` | GPT-5.6 Terra medium | Sol medium，再 GPT-5.5 medium | 快速找阻塞問題 |
+| `quick` | GPT-5.6 Sol medium | GPT-5.5 medium | 快速找阻塞問題 |
 | `standard` | GPT-5.6 Sol high | GPT-5.5 high | 預設日常 review |
-| `deep` | GPT-5.6 Sol max | GPT-5.5 xhigh | 複雜、高價值變更 |
+| `deep` | GPT-5.6 Sol xhigh | GPT-5.5 xhigh | 複雜、高價值變更 |
 | `ultra` | GPT-5.6 Sol ultra | 無 | Generic、可平行拆解的明確 opt-in |
 
 Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設帳號已開放 GPT-5.6。`--quick` 是 `--preset quick` 的 alias。
+
+`max` 不屬於 preset。只有明確傳入 `--reasoning-effort max` 才會使用，且必須是完整 sizing 的單一 repo scope，最多 15 個 changed files／1200 changed lines，不能用 `--allow-large-diff` 繞過。
 
 ## Useful Options
 
@@ -143,15 +145,42 @@ Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設
 - `--strict-config`：未知 config field 直接失敗，適合 diagnostic/CI。
 - `--no-update-check`：本次停用 Codex CLI 自動安裝／更新檢查。
 - `--force-update-check`：忽略快取，立即依既有安裝來源執行更新。
-- `--result-json <FILE>`：額外寫入 `schema_version: 2` wrapper result envelope；不取代 stdout final text。
+- `--result-json <FILE>`：額外寫入精簡的 `schema_version: 2` result envelope；不取代 stdout final text，也不重複 raw JSONL。
+- `--include-events`：明確要求把已遮蔽的 events 放入 `--result-json`；一般情況使用 `--output` 保存 raw JSONL。
 - `--output <FILE>`：保存 raw stdout / JSONL。
 - `--last-message-output <FILE>`：保存 final reviewer message。
+- `--scope-manifest <FILE>`：宣告跨 repo generic review 的所有 Git scope，並聚合 preflight sizing。
+- `--idle-timeout <SECONDS>`：無 stdout/stderr 活動的停滯上限；設為 `0` 可停用。
+- `--hard-timeout <SECONDS>`：整次執行的絕對上限；`--timeout` 保留為相容 hard timeout。
+- `--minimal-context`／`--full-context`：預設停用 plugins、apps、multi-agent；必要時才恢復完整 context。
 - `--isolated`：只忽略 user config/rules；不會停用 skill discovery、skills 或 plugins。
-- `--allow-large-diff`：越過大型 diff guard；應先拆 task 或 module。
+- `--allow-large-diff`：越過一般大型 diff guard；應先拆 task 或 module，且不能用於 `max`。
+
+跨 repo manifest 範例：
+
+```json
+{
+  "version": 1,
+  "scopes": [
+    {"repo": "/path/to/api", "kind": "base", "value": "main"},
+    {"repo": "/path/to/web", "kind": "uncommitted"}
+  ]
+}
+```
+
+```bash
+python3 "$SKILL_DIR/scripts/codex_review.py" custom \
+  --cd /path/to/api \
+  --scope-manifest /tmp/review-scope.json \
+  --preset standard \
+  "Review the declared cross-repository change"
+```
+
+`deep` custom review 必須有 `--scope-manifest` 或 `--review-range`。Scope manifest 只供 generic mode；native／structured 仍使用自身精確 scope flags。
 
 Structured review 預設使用 [references/review_output_schema.json](references/review_output_schema.json)。Schema 採用 Codex native field names，但 enforcement 由 generic `codex exec --output-schema` 提供。
 
-同一 repo 與 scope 一次只能執行一個 review。`agent_message`、skills context budget 警告與 heartbeat 都是進度訊號；必須等待 `turn.completed` 與有效 final result，不要在原 process 尚未結束時啟動 fallback。
+只要兩個 review 共用任一 `cwd`、`--add-dir` 或 manifest repo，就不能同時執行。`agent_message`、skills context budget 警告與 heartbeat 都是進度訊號；必須等待 `turn.completed` 與有效 final result，不要在原 process 尚未結束時啟動 fallback。Timeout 的 `partial_progress` 明確是未驗證進度，不得視為通過。
 
 ## Review Contract
 
