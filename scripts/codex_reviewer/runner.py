@@ -23,6 +23,15 @@ from .result import ReviewResult
 HEARTBEAT_SECONDS = 30
 ERROR_DETAIL_LIMIT = 8000
 ITEM_WARNING_DETAIL_LIMIT = 500
+TOOL_ITEM_TYPES = {
+    "command_execution": "command",
+    "mcp_tool_call": "mcp",
+    "web_search": "web",
+    "browser_tool_call": "browser",
+    "collab_tool_call": "collaboration",
+    "collaboration_tool_call": "collaboration",
+    "dynamic_tool_call": "dynamic",
+}
 
 try:
     import fcntl
@@ -124,6 +133,54 @@ def count_events(events: Sequence[Mapping[str, object]]) -> Dict[str, int]:
             item_key = f"item.{item['type']}"
             counts[item_key] = counts.get(item_key, 0) + 1
     return counts
+
+
+def tool_call_descriptor(
+    event: Mapping[str, object],
+) -> Optional[Dict[str, object]]:
+    """Return a normalized descriptor for JSONL events that prove tool use."""
+    event_type = event.get("type")
+    item = event.get("item")
+    payload = item if isinstance(item, Mapping) else event
+    item_type = payload.get("type")
+    if not isinstance(item_type, str):
+        return None
+    normalized = item_type.lower()
+    category = TOOL_ITEM_TYPES.get(normalized)
+    if (
+        category is None
+        and "dynamic" in normalized
+        and "tool" in normalized
+        and "call" in normalized
+    ):
+        category = "dynamic"
+    if category is None:
+        if "command" in normalized and (
+            "execution" in normalized or "call" in normalized
+        ):
+            category = "command"
+        elif "mcp" in normalized:
+            category = "mcp"
+        elif "web" in normalized and "search" in normalized:
+            category = "web"
+        elif "browser" in normalized:
+            category = "browser"
+        elif "collab" in normalized or "collaboration" in normalized:
+            category = "collaboration"
+    if category is None:
+        return None
+    namespace = payload.get("namespace")
+    if category == "dynamic" and isinstance(namespace, str):
+        normalized_namespace = namespace.lower()
+        if normalized_namespace == "browser" or normalized_namespace.startswith("browser."):
+            category = "browser"
+    call_id = payload.get("id") or event.get("id")
+    return {
+        "category": category,
+        "event_type": event_type,
+        "item_type": item_type,
+        "call_id": call_id if isinstance(call_id, str) else None,
+    }
 
 
 def extract_item_warnings(
@@ -230,6 +287,8 @@ class CodexProcessRunner:
         last_message_output: Optional[str] = None,
         env: Optional[Mapping[str, str]] = None,
         heartbeat_seconds: int = HEARTBEAT_SECONDS,
+        max_tool_calls: Optional[int] = None,
+        max_jsonl_bytes: Optional[int] = None,
     ):
         self.binary = binary
         self.timeout = timeout
@@ -239,6 +298,12 @@ class CodexProcessRunner:
         self.last_message_output = last_message_output
         self.env = dict(env or os.environ)
         self.heartbeat_seconds = heartbeat_seconds
+        self.max_tool_calls = max_tool_calls
+        self.max_jsonl_bytes = max_jsonl_bytes
+        if max_tool_calls is not None and max_tool_calls < 0:
+            raise ValueError("max_tool_calls cannot be negative")
+        if max_jsonl_bytes is not None and max_jsonl_bytes < 1:
+            raise ValueError("max_jsonl_bytes must be positive")
 
     def run(
         self,
@@ -280,6 +345,10 @@ class CodexProcessRunner:
         stdin_errors: List[str] = []
         lock_descriptors: List[int] = []
         runtime_warnings = list(warnings or [])
+        policy_violation: Optional[Dict[str, object]] = None
+        tool_call_keys = set()
+        tool_call_count = 0
+        raw_output_bytes_seen = 0
 
         def read_stream(stream, stream_name: str) -> None:
             try:
@@ -382,7 +451,7 @@ class CodexProcessRunner:
             while True:
                 try:
                     stream_name, line = event_queue.get(timeout=0.2)
-                    self._consume_line(
+                    event = self._consume_line(
                         stream_name,
                         line,
                         stdout_lines,
@@ -392,6 +461,43 @@ class CodexProcessRunner:
                         sensitive,
                     )
                     last_activity_at = time.monotonic()
+                    if stream_name == "stdout":
+                        raw_output_bytes_seen += len(line.encode("utf-8"))
+                        if event is not None:
+                            descriptor = tool_call_descriptor(event)
+                            if descriptor is not None:
+                                call_id = descriptor.get("call_id")
+                                call_key = (
+                                    f"{descriptor['category']}:{call_id}"
+                                    if call_id
+                                    else f"event:{len(events)}:{descriptor['item_type']}"
+                                )
+                                if call_key not in tool_call_keys:
+                                    tool_call_keys.add(call_key)
+                                    tool_call_count += 1
+                                if (
+                                    self.max_tool_calls is not None
+                                    and tool_call_count > self.max_tool_calls
+                                ):
+                                    policy_violation = {
+                                        "reason": "tool_call",
+                                        "observed": tool_call_count,
+                                        "limit": self.max_tool_calls,
+                                        **descriptor,
+                                    }
+                        if (
+                            policy_violation is None
+                            and self.max_jsonl_bytes is not None
+                            and raw_output_bytes_seen > self.max_jsonl_bytes
+                        ):
+                            policy_violation = {
+                                "reason": "jsonl_bytes_exceeded",
+                                "observed": raw_output_bytes_seen,
+                                "limit": self.max_jsonl_bytes,
+                            }
+                        if policy_violation is not None:
+                            self._terminate_process_group(process)
+                            break
                 except queue.Empty:
                     pass
 
@@ -451,9 +557,12 @@ class CodexProcessRunner:
                     flush=True,
                 )
             turn_completed = has_turn_completed(events)
-            final = (
-                extract_final(events) if self.json_output else output.strip() or None
-            )
+            if policy_violation is not None:
+                final = None
+            elif self.json_output:
+                final = extract_final(events)
+            else:
+                final = output.strip() or None
             if (
                 not final
                 and self.last_message_output
@@ -468,13 +577,17 @@ class CodexProcessRunner:
             success = (
                 exit_code == 0
                 and not timed_out
+                and policy_violation is None
                 and not stdin_errors
                 and terminal_error is None
                 and (not self.json_output or turn_completed)
                 and final is not None
             )
             error = None
-            if timed_out:
+            if policy_violation is not None:
+                reason = str(policy_violation.get("reason") or "policy_violation")
+                error = f"Codex review violated execution policy: {reason}"
+            elif timed_out:
                 suffix = (
                     f"; partial output written to {output_path}" if output_path else ""
                 )
@@ -499,7 +612,11 @@ class CodexProcessRunner:
                 if warning not in runtime_warnings:
                     runtime_warnings.append(warning)
             final = self._redact_text(final, sensitive) if final else None
-            if final and self.last_message_output:
+            if policy_violation is not None and self.last_message_output:
+                self._write_private(
+                    Path(self.last_message_output).expanduser(), ""
+                )
+            elif final and self.last_message_output:
                 self._write_private(Path(self.last_message_output).expanduser(), final)
             error = self._redact_text(error, sensitive) if error else None
             safe_warnings = [
@@ -507,8 +624,15 @@ class CodexProcessRunner:
             ]
             safe_output = self._redact_text(output, sensitive)
             safe_events = [self._redact_payload(event, sensitive) for event in events]
+            safe_policy_violation = (
+                self._redact_payload(policy_violation, sensitive)
+                if policy_violation is not None
+                else None
+            )
             duration_ms = int((time.monotonic() - started_at) * 1000)
             terminal_event = terminal_event_type(events)
+            event_counts = count_events(events)
+            event_counts["tool_calls"] = tool_call_count
             partial_progress = None
             if not success:
                 partial = extract_last_agent_message(events)
@@ -544,12 +668,19 @@ class CodexProcessRunner:
                 events=safe_events,
                 partial_progress=partial_progress,
                 execution_status=(
-                    "timed_out" if timed_out else "completed" if turn_completed else "failed"
+                    "policy_violation"
+                    if policy_violation is not None
+                    else "timed_out"
+                    if timed_out
+                    else "completed"
+                    if turn_completed
+                    else "failed"
                 ),
                 duration_ms=duration_ms,
                 terminal_event=terminal_event,
-                event_counts=count_events(events),
+                event_counts=event_counts,
                 raw_output_bytes=len(output.encode("utf-8")),
+                policy_violation=safe_policy_violation,
             ).to_dict()
         except FileNotFoundError:
             return ReviewResult(
@@ -602,24 +733,25 @@ class CodexProcessRunner:
         events: List[Mapping[str, object]],
         output_handle,
         sensitive_values: Sequence[str],
-    ) -> None:
+    ) -> Optional[Mapping[str, object]]:
         if stream_name == "stderr":
             stderr_lines.append(line)
-            return
+            return None
         stdout_lines.append(line)
         if output_handle:
             output_handle.write(line)
             output_handle.flush()
         if not self.json_output:
-            return
+            return None
         event = parse_jsonl_line(line)
         if not event:
-            return
+            return None
         events.append(event)
         progress = _progress_event(event)
         if progress:
             safe_progress = self._redact_text(progress, sensitive_values)
             print(f"[codex-review] {safe_progress}", file=sys.stderr, flush=True)
+        return event
 
     @staticmethod
     def _acquire_execution_lock(lock_key: str) -> Tuple[Optional[int], Optional[str]]:

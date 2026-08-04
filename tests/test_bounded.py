@@ -458,6 +458,53 @@ class BoundedCliTests(unittest.TestCase):
         )
         self.assertEqual(envelope["prompt_sha256"], envelope["packet_sha256"])
         self.assertEqual(envelope["gate_status"], "passed")
+        self.assertEqual(envelope["event_counts"]["tool_calls"], 0)
+
+    def test_bounded_default_zero_tool_policy_is_inconclusive_and_keeps_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            scope_path = write_json(
+                root / "scope.json",
+                {
+                    "version": 1,
+                    "kind": "commit_snapshot",
+                    "commit": "HEAD",
+                    "files": [
+                        {"path": "app.py", "ranges": [{"start": 1, "end": 2}]}
+                    ],
+                },
+            )
+            binary = make_fake_codex(root)
+            raw_path = root / "raw.jsonl"
+            result_path = root / "result.json"
+            result = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--bounded-scope",
+                str(scope_path),
+                "--output",
+                str(raw_path),
+                "--result-json",
+                str(result_path),
+                "bounded-review",
+                env={
+                    "FAKE_CODEX_TOOL_TYPES": "command_execution",
+                    "FAKE_CODEX_AFTER_TOOL_SLEEP": "120",
+                },
+            )
+            envelope = json.loads(result_path.read_text(encoding="utf-8"))
+            raw = raw_path.read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(envelope["success"])
+        self.assertEqual(envelope["execution_status"], "policy_violation")
+        self.assertEqual(envelope["gate_status"], "inconclusive")
+        self.assertEqual(envelope["policy_violation"]["reason"], "tool_call")
+        self.assertIsNone(envelope["final_result"])
+        self.assertIn("command_execution", raw)
 
     def test_bounded_review_rejects_context_and_scope_expansion_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -486,6 +533,7 @@ class BoundedCliTests(unittest.TestCase):
                 "schema": ["--schema", str(schema)],
                 "quick": ["--preset", "quick"],
                 "review_range": ["--review-range", "HEAD~1..HEAD"],
+                "tool_budget": ["--max-tool-calls", "1"],
             }
             for name, flags in cases.items():
                 with self.subTest(case=name):

@@ -44,10 +44,15 @@ jobs:
       - run: npm install --global @openai/codex@0.144.1
       - run: codex --version | grep '0.144.1'
       - run: codex exec --help > /dev/null
+      - run: codex exec --help | grep -- '--json'
+      - run: codex exec --help | grep -- '--output-schema'
+      - run: codex exec --help | grep -- '--ignore-user-config'
       - run: codex exec review --help > /dev/null
       - run: codex update --help > /dev/null
       - run: codex --help | grep -- '--disable'
-      - run: codex features list | grep -E '^(apps|multi_agent|plugins)[[:space:]]'
+      - run: codex features list | grep -E '^apps[[:space:]]'
+      - run: codex features list | grep -E '^multi_agent[[:space:]]'
+      - run: codex features list | grep -E '^plugins[[:space:]]'
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |
@@ -74,10 +79,15 @@ jobs:
       - run: npm install --global @openai/codex@latest
       - run: codex --version
       - run: codex exec --help > /dev/null
+      - run: codex exec --help | grep -- '--json'
+      - run: codex exec --help | grep -- '--output-schema'
+      - run: codex exec --help | grep -- '--ignore-user-config'
       - run: codex exec review --help > /dev/null
       - run: codex update --help > /dev/null
       - run: codex --help | grep -- '--disable'
-      - run: codex features list | grep -E '^(apps|multi_agent|plugins)[[:space:]]'
+      - run: codex features list | grep -E '^apps[[:space:]]'
+      - run: codex features list | grep -E '^multi_agent[[:space:]]'
+      - run: codex features list | grep -E '^plugins[[:space:]]'
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |

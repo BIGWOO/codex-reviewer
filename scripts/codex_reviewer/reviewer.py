@@ -199,6 +199,8 @@ class CodexReviewer:
         allow_large_diff: bool = False,
         max_changed_files: int = DEFAULT_MAX_CHANGED_FILES,
         max_diff_lines: int = DEFAULT_MAX_DIFF_LINES,
+        max_tool_calls: Optional[int] = None,
+        max_jsonl_bytes: Optional[int] = None,
         *,
         codex_bin: Optional[str] = None,
         preset: str = DEFAULT_PRESET,
@@ -243,6 +245,8 @@ class CodexReviewer:
         self.allow_large_diff = allow_large_diff
         self.max_changed_files = max_changed_files
         self.max_diff_lines = max_diff_lines
+        self.max_tool_calls = max_tool_calls
+        self.max_jsonl_bytes = max_jsonl_bytes
         self.preset = preset
         self.instructions = instructions or ""
         self.profile = profile
@@ -331,6 +335,14 @@ class CodexReviewer:
             return "--idle-timeout cannot be negative"
         if self.max_changed_files < 0 or self.max_diff_lines < 0:
             return "Large-diff thresholds cannot be negative"
+        if self.max_tool_calls is not None and self.max_tool_calls < 0:
+            return "--max-tool-calls cannot be negative"
+        if self.max_jsonl_bytes is not None and self.max_jsonl_bytes < 1:
+            return "--max-jsonl-bytes must be greater than zero"
+        if not self.json_output and (
+            self.max_tool_calls is not None or self.max_jsonl_bytes is not None
+        ):
+            return "--max-tool-calls and --max-jsonl-bytes require JSONL output"
         if self.cwd and not Path(self.cwd).is_dir():
             return f"Working directory does not exist: {self.cwd}"
         for directory in self.add_dirs:
@@ -616,6 +628,8 @@ class CodexReviewer:
             output_file=output_file or self.output_file,
             last_message_output=self.last_message_output,
             env=spec.environment,
+            max_tool_calls=self.max_tool_calls,
+            max_jsonl_bytes=self.max_jsonl_bytes,
         )
         result = runner.run(
             spec.argv,

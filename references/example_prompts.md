@@ -6,6 +6,7 @@
 
 - [參數](#參數)
 - [共同規則](#共同規則)
+- [Bounded packet review](#bounded-packet-review)
 - [變更範圍 review](#變更範圍-review)
 - [規格對照實作](#規格對照實作)
 - [防禦式安全 review](#防禦式安全-review)
@@ -45,6 +46,29 @@ Return every discrete, actionable issue the author would likely fix. Ignore styl
 For each finding, cite the smallest relevant file and line range, explain the triggering condition and impact, and state confidence.
 Validate claims against source code, tests, schemas, and repository instructions. If evidence is insufficient, record the limitation instead of guessing.
 ```
+
+## Bounded packet review
+
+`bounded-review` 不接受任意 positional prompt；caller 只提供 strict scope/evidence JSON，helper 產生完整 contract packet。主 agent 先執行 tests，reviewer 只消費 evidence：
+
+```json
+{
+  "version": 1,
+  "kind": "uncommitted_diff",
+  "files": ["src/aes.ts", "tests/aes.test.ts"]
+}
+```
+
+```json
+{
+  "version": 1,
+  "checks": [
+    {"name": "targeted tests", "status": "passed", "detail": "23/23"}
+  ]
+}
+```
+
+先用 `standard`。只有已取得完整終態、但 packet 內證據仍不足時，才由 caller 明確改用 `deep`；不得在 timeout 後保持 scope 不變只替換 mode、preset 或 isolation flags 重試。
 
 ## 變更範圍 review
 

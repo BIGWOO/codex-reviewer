@@ -201,6 +201,58 @@ def main() -> int:
             {"type": "thread.started", "thread_id": "fake-thread"},
             {"type": "turn.started"},
         ]
+        for event in events:
+            print(json.dumps(event), flush=True)
+        progress_message = os.environ.get("FAKE_CODEX_PROGRESS_MESSAGE")
+        if progress_message:
+            print(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "progress-message",
+                            "type": "agent_message",
+                            "text": progress_message,
+                        },
+                    }
+                ),
+                flush=True,
+            )
+        tool_types = [
+            item.strip()
+            for item in os.environ.get("FAKE_CODEX_TOOL_TYPES", "").split(",")
+            if item.strip()
+        ]
+        for index, item_type in enumerate(tool_types):
+            print(
+                json.dumps(
+                    {
+                        "type": "item.started",
+                        "item": {"id": f"tool-{index}", "type": item_type},
+                    }
+                ),
+                flush=True,
+            )
+        if tool_types and os.environ.get("FAKE_CODEX_AFTER_TOOL_SLEEP"):
+            time.sleep(float(os.environ["FAKE_CODEX_AFTER_TOOL_SLEEP"]))
+        filler_bytes = int(os.environ.get("FAKE_CODEX_JSONL_FILLER_BYTES", "0"))
+        if filler_bytes:
+            print(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "filler",
+                            "type": "reasoning",
+                            "text": "x" * filler_bytes,
+                        },
+                    }
+                ),
+                flush=True,
+            )
+        if filler_bytes and os.environ.get("FAKE_CODEX_AFTER_FILLER_SLEEP"):
+            time.sleep(float(os.environ["FAKE_CODEX_AFTER_FILLER_SLEEP"]))
+        events = []
         if os.environ.get("FAKE_CODEX_SKILL_BUDGET_WARNING"):
             events.append(
                 {

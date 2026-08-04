@@ -34,7 +34,7 @@ description: Use OpenAI Codex CLI as an independent, read-only second-opinion re
 
 1. 先讀 `git status --short --branch`、目標 diff、相關規格與 repo instructions，固定 base/head 或 commit scope。
 2. 選擇 native 或 generic mode；不要用 parser 接受旗標推論 native 真正支援能力。
-3. 大型 diff 先按 task、module 或風險面拆分；quick 只供低成本 triage，正式 gate 使用 standard，高風險窄範圍使用 deep。
+3. 窄 tracer 優先使用 `bounded-review` + `standard`。只有 standard 已有終態但證據仍不足，才由 caller 明確升級同一窄 packet 為 `deep`；不要自動升級。
 4. 使用 helper 執行並等待同一個 process 完成。只有在診斷 helper/CLI contract 時才直接組 raw `codex` command；不得根據中途訊息另開一輪。
 5. 驗證每個 finding：必須有可重現條件、具體影響、最小檔案/行號證據，且確實落在本次 scope。
 6. 整合成 findings-first 回覆；分開標示已確認問題、分歧、限制與未執行的測試。不要原樣貼整份 reviewer transcript。
@@ -45,6 +45,7 @@ description: Use OpenAI Codex CLI as an independent, read-only second-opinion re
 |---|---|
 | Base branch、單一 commit、未提交變更，使用內建 rubric | `native-review` |
 | 穩定 JSON schema | `structured-review` |
+| 精確檔案／range packet，禁止 child tools | `bounded-review` |
 | 自訂 criteria、任意 range、規格、架構、安全或效能 | `custom`、`diff`、`focused` 或專用 generic type |
 | 圖片或 live search | Generic only |
 | Ultra / subagents | Generic only，且必須明確 opt-in |
@@ -89,6 +90,17 @@ python3 "$SKILL_DIR/scripts/codex_review.py" structured-review \
   --result-json /tmp/codex-review-result.json
 ```
 
+Bounded standard review（scope JSON 由 caller 建立，tests 由主 agent 先執行）：
+
+```bash
+python3 "$SKILL_DIR/scripts/codex_review.py" bounded-review \
+  --cd /path/to/repo \
+  --bounded-scope /tmp/review-scope.json \
+  --evidence-json /tmp/review-evidence.json \
+  --preset standard \
+  --enforce-gate
+```
+
 Binary 或 auth 不確定時，先跑不呼叫模型的診斷：
 
 ```bash
@@ -100,9 +112,11 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 
 跨 repo 的 generic review 必須使用 `--scope-manifest <JSON>` 宣告每個 repo 的 `uncommitted`、`base`、`commit` 或 `range` scope。Deep custom review 必須提供 manifest 或 `--review-range`，避免未 sizing 的廣域審查。
 
-預設 `--minimal-context` 會停用 plugins、apps 與 multi-agent；只有確定 reviewer 需要這些能力時才用 `--full-context`。`--idle-timeout` 控制無輸出停滯，`--hard-timeout` 控制絕對上限。
+預設 `--minimal-context` 會停用 plugins、apps 與 multi-agent，但不代表停用一般 skill discovery 或所有 MCP。Bounded mode 另以 JSONL policy 強制零 command／MCP／web／browser／collaboration tools。只有非 bounded review 確定需要完整 context 時才用 `--full-context`。
 
-`--isolated` 只等同 `--ignore-user-config --ignore-rules`；它不會停用 skill discovery、skills 或 plugins，也不可作為 review 失敗後的自動重試策略。
+`--ignore-user-config` 只忽略 base user config，仍保留 project rules；`--isolated` 則等同 `--ignore-user-config --ignore-rules`，兩者都不保證停用 skill discovery。Bounded mode固定使用 `--ignore-user-config` 並拒絕 `--isolated`。
+
+`--max-tool-calls` 與 `--max-jsonl-bytes` 對既有模式預設 unlimited；bounded 固定零工具並預設最多 262144 JSONL bytes。Policy violation、timeout 或缺少終態都不得視為 final success。Scope 不變時禁止只替換 mode／preset／隔離旗標重試 timeout；先縮小 packet 或由 caller 明確決定下一步。
 
 ## Quality Gate
 
@@ -111,8 +125,8 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 - 對每個高風險 finding 重新讀 source 與 diff。
 - 排除 pre-existing、scope 外、純風格與無法證明 downstream impact 的項目。
 - 檢查 file path、line range、priority 與 confidence 是否合理。
-- Quick pass 只供 triage，不算 quality gate 完成；交付前至少重跑 `standard`，高風險變更使用 `deep`。
-- P0/P1 finding 阻擋交付。P2 必須修正，或記錄不修理由後針對該範圍重跑 reviewer。
+- Quick pass 只供 triage，不算 quality gate 完成；窄 tracer 先跑 bounded `standard`，只有證據不足才明確升級 `deep`。
+- P0–P2 finding 都是 `blocked`；僅 P3 為 `passed_with_warnings`。P2 必須修正，或記錄不修理由後針對該範圍重跑 reviewer。
 - Reviewer 無 finding 時，仍回報未跑測試、環境限制與 residual risk。
 - 若 structured output parse/schema validation 失敗，不要默默降級成「審查通過」。
 - 只有 `turn.completed` 且 structured schema 驗證成功才算完成；中途符合 schema 的進度訊息仍不是 final result。

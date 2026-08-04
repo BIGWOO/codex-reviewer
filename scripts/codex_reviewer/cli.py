@@ -197,6 +197,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Large-diff changed-line threshold.",
     )
     parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        help="Maximum unique JSONL tool calls; unset means unlimited.",
+    )
+    parser.add_argument(
+        "--max-jsonl-bytes",
+        type=int,
+        help="Maximum raw JSONL stdout bytes; unset means unlimited.",
+    )
+    parser.add_argument(
         "--text", action="store_true", help="Disable JSONL and use plain Codex output."
     )
     parser.add_argument(
@@ -334,6 +344,14 @@ def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
 
 def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
     bounded = args.review_type == "bounded-review"
+    max_tool_calls = (
+        0 if bounded and args.max_tool_calls is None else args.max_tool_calls
+    )
+    max_jsonl_bytes = (
+        262144
+        if bounded and args.max_jsonl_bytes is None
+        else args.max_jsonl_bytes
+    )
     ignore_user_config = bounded or args.ignore_user_config or args.isolated
     ignore_rules = args.ignore_rules or args.isolated
     review_range = args.review_range
@@ -365,6 +383,8 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         allow_large_diff=args.allow_large_diff,
         max_changed_files=args.max_changed_files,
         max_diff_lines=args.max_diff_lines,
+        max_tool_calls=max_tool_calls,
+        max_jsonl_bytes=max_jsonl_bytes,
         codex_bin=args.codex_bin,
         preset=preset,
         instructions=args.instructions,
@@ -385,6 +405,8 @@ def _validate_bounded_args(args: argparse.Namespace, preset: str) -> Optional[st
         return "bounded-review does not accept a target or positional prompt"
     if preset not in {"standard", "deep"}:
         return "bounded-review supports only --preset standard or explicit --preset deep"
+    if args.max_tool_calls not in {None, 0}:
+        return "bounded-review enforces --max-tool-calls 0"
     conflicts = []
     if args.model:
         conflicts.append("--model")

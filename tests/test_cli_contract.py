@@ -36,6 +36,11 @@ class CliContractTests(unittest.TestCase):
             "--dry-run",
             "--result-json",
             "--scope-manifest",
+            "--bounded-scope",
+            "--evidence-json",
+            "--enforce-gate",
+            "--max-tool-calls",
+            "--max-jsonl-bytes",
             "--no-update-check",
             "--force-update-check",
         ):

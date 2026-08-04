@@ -1,6 +1,6 @@
 # Codex Reviewer Skill
 
-透過 OpenAI Codex CLI 啟動獨立、唯讀的 second-opinion reviewer。支援 Git branch/commit/uncommitted review、自訂 criteria、structured findings、模型 preset 與可稽核的 JSONL 執行結果。
+透過 OpenAI Codex CLI 啟動獨立、唯讀的 second-opinion reviewer。支援 Git branch/commit/uncommitted review、可驗證 bounded packet、自訂 criteria、structured findings、模型 preset 與可稽核的 JSONL 執行結果。
 
 ## Minimum Requirements
 
@@ -102,6 +102,18 @@ python3 "$SKILL_DIR/scripts/codex_review.py" structured-review \
   --result-json /tmp/codex-review-result.json
 ```
 
+窄 tracer 建議先用 bounded standard。主 agent 先執行 tests，再把結果放進 evidence JSON：
+
+```bash
+python3 "$SKILL_DIR/scripts/codex_review.py" bounded-review \
+  --cd /path/to/repo \
+  --bounded-scope /tmp/review-scope.json \
+  --evidence-json /tmp/review-evidence.json \
+  --preset standard \
+  --enforce-gate \
+  --result-json /tmp/codex-bounded-result.json
+```
+
 先檢查實際 command、不呼叫模型：
 
 ```bash
@@ -130,6 +142,7 @@ python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
 |---|---|
 | `native-review` | 精確的 `--base`、`--commit` 或 `--uncommitted` review |
 | `structured-review` | 需要 native-compatible structured findings |
+| `bounded-review` | 主程序封裝精確 code/range/diff，child 僅讀 packet 且禁止 tools |
 | `custom` / `focused` / `diff` | 自訂 criteria、任意 range 或特定檔案 |
 | `security` / `performance` / `architecture` / `quality` | Generic 專項 review |
 | `doctor` | Binary、version、catalog 或 Git diagnostic |
@@ -149,6 +162,42 @@ Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設
 
 `max` 不屬於 preset。只有明確傳入 `--reasoning-effort max` 才會使用，且必須是完整 sizing 的單一 repo scope，最多 15 個 changed files／1200 changed lines，不能用 `--allow-large-diff` 繞過。
 
+## Bounded Review Contract
+
+`--bounded-scope` 使用 version 1 JSON file，v1 只支援單一 repo：
+
+```json
+{
+  "version": 1,
+  "kind": "commit_snapshot",
+  "commit": "HEAD",
+  "files": [
+    {"path": "src/aes.ts", "ranges": [{"start": 40, "end": 96}]}
+  ]
+}
+```
+
+其他 kind：
+
+- `commit_diff`：`commit` 加上 `files` path allowlist。
+- `uncommitted_diff`：只封裝 `files` 指定的 staged、unstaged、untracked layers。
+
+選填 evidence JSON：
+
+```json
+{
+  "version": 1,
+  "checks": [
+    {"name": "targeted unittest", "status": "passed", "detail": "23/23"},
+    {"name": "integration", "status": "not_run"}
+  ]
+}
+```
+
+Status 只接受 `passed`、`failed`、`not_run`。Scope／evidence 都拒絕未知欄位；scope 另拒絕絕對路徑、`..`、重複／重疊／越界 range、binary 與無效 ref。Git 抽取在主程序完成，Codex stdin 只收到 canonical JSON packet。Result envelope 會記錄實際 files／lines／bytes、scope fingerprint、packet hash 與 prompt hash。
+
+Bounded 固定 bundled schema、`standard` 預設、`--ignore-user-config`、minimal context、零工具與 262144-byte JSONL 預算；可顯式選 `deep`，但不會自動升級。它拒絕 search、images、full-context、profile、isolated、add-dir、scope-manifest 與自訂 schema/prompt。
+
 ## Useful Options
 
 - `--instructions <TEXT>`：加入 repo-specific review criteria。
@@ -162,10 +211,15 @@ Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設
 - `--output <FILE>`：保存 raw stdout / JSONL。
 - `--last-message-output <FILE>`：保存 final reviewer message。
 - `--scope-manifest <FILE>`：宣告跨 repo generic review 的所有 Git scope，並聚合 preflight sizing。
+- `--bounded-scope <FILE>`：單 repo strict bounded scope；只供 `bounded-review`。
+- `--evidence-json <FILE>`：主 agent 已執行的 check evidence；reviewer 不重跑 tests。
+- `--enforce-gate`：passed／warnings exit 0、blocked exit 2、failure／inconclusive exit 1。
+- `--max-tool-calls <N>`：既有模式預設 unlimited；bounded 固定 0。
+- `--max-jsonl-bytes <N>`：既有模式預設 unlimited；bounded 預設 262144。
 - `--idle-timeout <SECONDS>`：無 stdout/stderr 活動的停滯上限；設為 `0` 可停用。
 - `--hard-timeout <SECONDS>`：整次執行的絕對上限；`--timeout` 保留為相容 hard timeout。
-- `--minimal-context`／`--full-context`：預設停用 plugins、apps、multi-agent；必要時才恢復完整 context。
-- `--isolated`：只忽略 user config/rules；不會停用 skill discovery、skills 或 plugins。
+- `--minimal-context`／`--full-context`：預設停用 plugins、apps、multi-agent，但不代表停用一般 skills 或所有 MCP。
+- `--ignore-user-config`：忽略 base user config；`--isolated` 另外忽略 rules，兩者用途不同。
 - `--allow-large-diff`：越過一般大型 diff guard；應先拆 task 或 module，且不能用於 `max`。
 
 跨 repo manifest 範例：
@@ -188,11 +242,11 @@ python3 "$SKILL_DIR/scripts/codex_review.py" custom \
   "Review the declared cross-repository change"
 ```
 
-`deep` custom review 必須有 `--scope-manifest` 或 `--review-range`。Scope manifest 只供 generic mode；native／structured 仍使用自身精確 scope flags。
+`deep` custom review 必須有 `--scope-manifest` 或 `--review-range`。Scope manifest 只供 generic mode；native／structured 仍使用自身精確 scope flags。`--review-range` 只做 sizing，不會改寫 prompt 或真正縮小 child scope。
 
 Structured review 預設使用 [references/review_output_schema.json](references/review_output_schema.json)。Schema 採用 Codex native field names，但 enforcement 由 generic `codex exec --output-schema` 提供。
 
-只要兩個 review 共用任一 `cwd`、`--add-dir` 或 manifest repo，就不能同時執行。`agent_message`、skills context budget 警告與 heartbeat 都是進度訊號；必須等待 `turn.completed` 與有效 final result，不要在原 process 尚未結束時啟動 fallback。Timeout 的 `partial_progress` 明確是未驗證進度，不得視為通過。
+只要兩個 review 共用任一 `cwd`、`--add-dir` 或 manifest repo，就不能同時執行。`agent_message`、skills context budget 警告與 heartbeat 都是進度訊號；必須等待 `turn.completed` 與有效 final result，不要在原 process 尚未結束時啟動 fallback。Timeout 的 `partial_progress` 明確是未驗證進度，不得視為通過；scope 不變時也禁止只換 mode、preset 或 isolation 旗標重試。
 
 ## Review Contract
 
@@ -201,8 +255,8 @@ Structured review 預設使用 [references/review_output_schema.json](references
 - Scope-bound：避免 pre-existing、無關 refactor 與純風格噪音。
 - Defensive security：描述風險與修法，不產生 exploit walkthrough。
 - Independent verification：主 agent 必須重新核對高風險 finding，不能把 reviewer 當成最終裁決者。
-- Quick 只做 triage，不代表 quality gate 完成；交付前至少跑 `standard`，高風險變更跑 `deep`。
-- P0/P1 阻擋交付；P2 必須修正，或記錄理由後針對該範圍重跑 reviewer。
+- Quick 只做 triage，不代表 quality gate 完成；窄 tracer 先跑 bounded `standard`，證據不足時才明確升級 `deep`。
+- P0–P2 為 `blocked`；僅 P3 為 `passed_with_warnings`。P2 必須修正，或記錄理由後針對該範圍重跑 reviewer。
 
 ## Files
 

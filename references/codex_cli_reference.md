@@ -21,6 +21,7 @@
 | 需求 | Native `codex exec review` | Generic `codex exec` | 選擇 |
 |---|---:|---:|---|
 | 精確審查 base branch、commit、未提交變更 | 是 | 需在 prompt 定義 | Native |
+| Packet-only 精確檔案／range，禁止 child tools | 否 | 是 | Bounded generic |
 | Codex 內建 bug rubric 與 P0-P3 findings | 是 | 需自行提供 | Native |
 | 自訂審查 criteria 或檔案集合 | scope 不能再帶 custom prompt | 是 | Generic |
 | 任意 commit range | 無原生 range flag | 是 | Generic |
@@ -144,6 +145,19 @@ codex --ask-for-approval never \
 
 把大型或含敏感內容的 prompt 走 stdin，不要把完整 prompt 放入 process list 或 diagnostic command output。
 
+### Bounded packet review
+
+```bash
+python3 scripts/codex_review.py bounded-review \
+  --cd /path/to/repo \
+  --bounded-scope /tmp/scope.json \
+  --evidence-json /tmp/evidence.json \
+  --preset standard \
+  --enforce-gate
+```
+
+主程序先以 Git object／diff 建立 canonical JSON packet；child stdin 只有該 packet，不再自行讀 Git或執行 tests。Bounded 固定 generic `--output-schema`、`--ignore-user-config`、minimal context、零工具與預設 262144-byte JSONL 上限。`deep` 只能由 caller 明確選擇，不會因風險標籤自動升級。
+
 ### Live search 與圖片
 
 Live search 是 root-level flag：
@@ -206,7 +220,9 @@ CLI help 會在 `codex exec review` 顯示 `--output-schema`，exec parser 也�
 
 `references/review_output_schema.json` 採用 native-compatible field names，但只保證 generic `codex exec` 的 schema enforcement。
 
-Helper 的 `--result-json <FILE>` 另外寫入精簡的 v2 execution envelope，不取代 stdout final message。Envelope 包含選定的 absolute binary/version、scope 與 sizing metrics、model/effort/Fast tier、usage、idle/hard timeout、warnings、sanitized command、final result、partial progress、exit code 與 error；stdin prompt 不會寫入 envelope。Raw JSONL 只由 `--output` 保存；只有明確使用 `--include-events` 才會在 envelope 加入已遮蔽的 events。Timeout 的 `partial_progress` 永遠是未驗證進度，不是 final result。
+Helper 的 `--result-json <FILE>` 另外寫入精簡的 v2 execution envelope，不取代 stdout final message。`success` 保留執行完成語意；`execution_status`、`review_verdict`、`gate_status` 分開記錄 process、structured verdict 與 delivery gate。Envelope 另包含 duration、terminal event、event counts、raw bytes、policy violation，以及 bounded scope／packet／prompt hashes。Raw JSONL 只由 `--output` 保存；只有明確使用 `--include-events` 才會在 envelope 加入已遮蔽 events。Timeout 或 policy violation 的 `partial_progress` 永遠是未驗證進度，不是 final result。
+
+`--enforce-gate` 的 exit contract：`passed`／`passed_with_warnings` 為 0、`blocked` 為 2、執行失敗／`inconclusive`／`not_evaluated` 為 1。P0–P2 都會 block；只有 P3 是 warning。
 
 ## V2 profile
 
@@ -248,12 +264,12 @@ Profile 適合個人預設；公開 skill 不應擅自建立或覆寫使用者�
 
 - Reviewer 固定 `read-only`，只產生意見，不套 patch。
 - Non-interactive review 明確傳入 `--ask-for-approval never`，避免無人值守時卡在 prompt。
-- `--isolated` 僅是 `--ignore-user-config --ignore-rules` alias；它不會停用 skill discovery、skills 或 plugins。
+- `--ignore-user-config` 只忽略 base user config；`--isolated` 另外忽略 user/project rules。兩者都不保證停用 skill discovery。
 - `item.completed` 內的 `agent_message` 與 `error` 是進度事件，不是 terminal result。skills context budget 訊息應記為 warning。
 - JSONL review 只有收到 `turn.completed` 才能成功；structured review 還必須通過 final JSON schema 驗證。
 - Helper 對 `cwd`、每個 `--add-dir` 與 scope manifest repo 都使用 single-flight lock。任一 root 重疊時，等待或終止原 process 後再重試，不要平行啟動 fallback。
 - 預設 `--ephemeral`，避免一次性 second opinion 汙染 session history。
-- 預設 minimal context，透過 `--disable plugins --disable apps --disable multi_agent` 降低無關 context；這不代表停用一般 skill discovery。只有確定需要時才用 `--full-context`。
+- 預設 minimal context，透過 `--disable plugins --disable apps --disable multi_agent` 降低無關 context；這不代表停用一般 skill discovery 或所有 MCP。Bounded 另檢查 JSONL，command／MCP／web／browser／collaboration call 立即成為 policy violation。
 - `--ignore-user-config` 可做 deterministic run，auth 仍使用 `CODEX_HOME`；但可能移除必要 provider 或 MCP 設定。
 - `--ignore-rules` 會略過 user/project execpolicy，除非受控 CI 明確需要，否則不要預設啟用。
 - 禁止 `--dangerously-bypass-approvals-and-sandbox`、`--full-auto`、`workspace-write` 與 `danger-full-access`。
@@ -267,7 +283,7 @@ GPT-5.6 request 超過 272K input tokens 會套用 long-context 計價。大型 
 1. 固定 merge base 或 commit range。
 2. 計算 staged、unstaged、untracked 的檔案與行數。
 3. 按 task、模組或風險面拆分。
-4. 需要低成本 triage 時先 quick；正式 gate 用 standard，高風險窄範圍用 deep。
+4. 需要低成本 triage 時先 quick；窄 tracer 正式 gate 先用 bounded standard，只有終態證據不足才明確升級 deep。
 
 Generic 跨 repo review 使用 version 1 scope manifest：
 
@@ -284,6 +300,8 @@ Generic 跨 repo review 使用 version 1 scope manifest：
 支援的 `kind` 是 `uncommitted`、`base`、`commit`、`range`。每個 scope 都會獨立以 NUL-safe Git 命令 sizing，再聚合檔案數與 changed lines。Deep custom review 沒有 `--scope-manifest` 或 `--review-range` 時直接失敗。
 
 執行時間使用兩個界線：`--idle-timeout` 偵測 Codex 無輸出停滯，`--hard-timeout` 是絕對上限；既有 `--timeout` 保留為 hard timeout 相容參數。
+
+`--max-tool-calls` 與 `--max-jsonl-bytes` 對既有模式預設 unlimited。Bounded 固定 max tools 0，JSONL 預設 262144 bytes；超限時 helper 立即終止 process group、保存 raw/partial evidence，且永遠不產生成功 final。Timeout 後不得在 scope 不變時只替換 mode、preset、`--ignore-user-config` 或 `--isolated` 重試。
 
 ## 診斷
 
