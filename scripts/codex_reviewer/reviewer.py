@@ -21,6 +21,7 @@ from .catalog import (
     resolve_model_selection,
 )
 from .commands import CommandBuilder, CommandSpec
+from .gate import derive_bundled_gate
 from .result import ReviewResult
 from .runner import CodexProcessRunner
 from .scope import (
@@ -598,6 +599,8 @@ class CodexReviewer:
                     warnings=list(warnings),
                     command=spec.display_command,
                     final=f"Dry run: {spec.display_command}",
+                    execution_status="not_run",
+                    duration_ms=0,
                 ).to_dict()
             )
 
@@ -623,23 +626,38 @@ class CodexReviewer:
             lock_keys=[f"root:{root}" for root in self._resource_roots],
         )
         result = self._with_runtime(result)
+        if validate_bundled_shape and not result.get("success"):
+            result["review_verdict"] = "inconclusive"
+            result["gate_status"] = "inconclusive"
         if structured and result.get("success"):
             final = result.get("final_result")
             if not isinstance(final, str) or not final.strip():
                 result["success"] = False
                 result["error"] = "Structured review completed without a final result"
+                if validate_bundled_shape:
+                    result["review_verdict"] = "inconclusive"
+                    result["gate_status"] = "inconclusive"
                 return result
             try:
                 structured_result = json.loads(final)
             except json.JSONDecodeError as exc:
                 result["success"] = False
                 result["error"] = f"Structured review returned invalid JSON: {exc}"
+                if validate_bundled_shape:
+                    result["review_verdict"] = "inconclusive"
+                    result["gate_status"] = "inconclusive"
                 return result
             if validate_bundled_shape:
                 validation_error = _structured_error(structured_result)
                 if validation_error:
                     result["success"] = False
                     result["error"] = validation_error
+                    result["review_verdict"] = "inconclusive"
+                    result["gate_status"] = "inconclusive"
+                else:
+                    verdict, gate = derive_bundled_gate(structured_result)
+                    result["review_verdict"] = verdict
+                    result["gate_status"] = gate
             result["structured_result"] = structured_result
         return result
 

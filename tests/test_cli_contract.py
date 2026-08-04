@@ -131,6 +131,17 @@ class CliContractTests(unittest.TestCase):
             "error",
             "install_method",
             "update",
+            "execution_status",
+            "review_verdict",
+            "gate_status",
+            "duration_ms",
+            "terminal_event",
+            "event_counts",
+            "raw_output_bytes",
+            "scope_fingerprint",
+            "packet_sha256",
+            "prompt_sha256",
+            "policy_violation",
         ):
             self.assertIn(key, envelope)
         self.assertEqual(envelope["binary"], str(binary.resolve()))
@@ -141,6 +152,106 @@ class CliContractTests(unittest.TestCase):
         self.assertNotIn(os.environ.get("PATH", ""), envelope["sanitized_command"])
         self.assertNotIn("output", envelope)
         self.assertNotIn("events", envelope)
+        self.assertEqual(envelope["execution_status"], "completed")
+        self.assertEqual(envelope["review_verdict"], "not_evaluated")
+        self.assertEqual(envelope["gate_status"], "not_evaluated")
+        self.assertEqual(envelope["terminal_event"], "turn.completed")
+        self.assertGreater(envelope["raw_output_bytes"], 0)
+        self.assertGreaterEqual(envelope["event_counts"]["turn.completed"], 1)
+
+    def test_enforce_gate_preserves_final_output_and_uses_gate_exit_codes(self) -> None:
+        blocked_result = {
+            "findings": [
+                {
+                    "title": "[P2] Reject unsafe input",
+                    "body": "The input is accepted without validation.",
+                    "confidence_score": 0.99,
+                    "priority": 2,
+                    "code_location": {
+                        "absolute_file_path": "/tmp/app.py",
+                        "line_range": {"start": 1, "end": 1},
+                    },
+                }
+            ],
+            "overall_correctness": "patch is incorrect",
+            "overall_explanation": "A correctness defect remains.",
+            "overall_confidence_score": 0.99,
+        }
+        passed_result = {
+            "findings": [],
+            "overall_correctness": "patch is correct",
+            "overall_explanation": "No defects found.",
+            "overall_confidence_score": 0.99,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            (repo / "app.py").write_text(
+                "def total(values):\n    return 0\n", encoding="utf-8"
+            )
+            binary = make_fake_codex(root)
+            blocked_path = root / "blocked.json"
+            blocked = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--result-json",
+                str(blocked_path),
+                "--enforce-gate",
+                "structured-review",
+                "--uncommitted",
+                env={"FAKE_CODEX_FINAL": json.dumps(blocked_result)},
+            )
+            blocked_envelope = json.loads(blocked_path.read_text(encoding="utf-8"))
+            compatible = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "structured-review",
+                "--uncommitted",
+                env={"FAKE_CODEX_FINAL": json.dumps(blocked_result)},
+            )
+            passed_path = root / "passed.json"
+            passed = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--result-json",
+                str(passed_path),
+                "--enforce-gate",
+                "structured-review",
+                "--uncommitted",
+                env={"FAKE_CODEX_FINAL": json.dumps(passed_result)},
+            )
+            passed_envelope = json.loads(passed_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        self.assertEqual(compatible.returncode, 0, compatible.stderr)
+        self.assertEqual(blocked.stdout.strip(), json.dumps(blocked_result))
+        self.assertTrue(blocked_envelope["success"])
+        self.assertEqual(blocked_envelope["review_verdict"], "incorrect")
+        self.assertEqual(blocked_envelope["gate_status"], "blocked")
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        self.assertEqual(passed_envelope["review_verdict"], "correct")
+        self.assertEqual(passed_envelope["gate_status"], "passed")
+
+    def test_enforce_gate_returns_one_when_review_is_not_evaluated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = make_fake_codex(Path(tmp))
+            result = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--skip-git-repo-check",
+                "--enforce-gate",
+                "custom",
+                "review",
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("findings", result.stdout)
 
     def test_result_envelope_events_are_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -578,6 +689,9 @@ class CliContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(envelope["success"])
         self.assertIn("invalid JSON", envelope["error"])
+        self.assertEqual(envelope["execution_status"], "completed")
+        self.assertEqual(envelope["review_verdict"], "inconclusive")
+        self.assertEqual(envelope["gate_status"], "inconclusive")
 
     def test_structured_missing_final_output_is_not_a_false_green(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

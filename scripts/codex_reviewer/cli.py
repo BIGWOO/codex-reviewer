@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
 from .catalog import DEFAULT_PRESET, PRESET_NAMES
+from .gate import gate_exit_code
+from .result import error_result
 from .reviewer import (
     DEFAULT_MAX_CHANGED_FILES,
     DEFAULT_MAX_DIFF_LINES,
@@ -118,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-events",
         action="store_true",
         help="Include sanitized JSONL events in --result-json (raw JSONL still belongs in --output).",
+    )
+    parser.add_argument(
+        "--enforce-gate",
+        action="store_true",
+        help="Exit 2 for blocked findings and 1 for failed, inconclusive, or unevaluated reviews.",
     )
     parser.add_argument(
         "--schema", dest="schema_file", help="JSON Schema for generic final output."
@@ -250,25 +257,13 @@ def build_parser() -> argparse.ArgumentParser:
 def require_target(args: argparse.Namespace) -> Optional[Dict[str, object]]:
     if args.target:
         return None
-    return {
-        "schema_version": 2,
-        "success": False,
-        "mode": args.review_type,
-        "error": f"{args.review_type} review requires a target or prompt",
-        "summary": None,
-        "final_result": None,
-    }
+    return error_result(
+        args.review_type, f"{args.review_type} review requires a target or prompt"
+    )
 
 
 def _error(mode: str, message: str) -> Dict[str, object]:
-    return {
-        "schema_version": 2,
-        "success": False,
-        "mode": mode,
-        "error": message,
-        "summary": None,
-        "final_result": None,
-    }
+    return error_result(mode, message)
 
 
 def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
@@ -497,6 +492,17 @@ def _public_result_envelope(
         "error",
         "structured_result",
         "diagnostics",
+        "execution_status",
+        "review_verdict",
+        "gate_status",
+        "duration_ms",
+        "terminal_event",
+        "event_counts",
+        "raw_output_bytes",
+        "scope_fingerprint",
+        "packet_sha256",
+        "prompt_sha256",
+        "policy_violation",
     )
     envelope = {key: result[key] for key in keys if key in result}
     if include_events and "events" in result:
@@ -552,7 +558,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             or ""
         )
         print(final)
-        return 0
+        if not args.enforce_gate:
+            return 0
+        return gate_exit_code(result.get("gate_status"))
     if result.get("mode") == "doctor" and result.get("final_result"):
         print(result["final_result"], file=sys.stderr)
     print(f"Error: {result.get('error') or 'Codex review failed'}", file=sys.stderr)

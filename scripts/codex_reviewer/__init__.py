@@ -11,6 +11,7 @@ from .catalog import (
     resolve_model_selection,
 )
 from .commands import CommandBuilder, CommandSpec
+from .gate import derive_bundled_gate, gate_exit_code
 from .result import ReviewResult
 from .reviewer import CodexReviewer
 from .scope import DiffMetrics, GitInspector, ReviewScope
@@ -24,6 +25,8 @@ __all__ = [
     "CommandBuilder",
     "CommandSpec",
     "DiffMetrics",
+    "derive_bundled_gate",
+    "gate_exit_code",
     "GitInspector",
     "ModelCatalog",
     "ModelInfo",

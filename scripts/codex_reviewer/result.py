@@ -30,9 +30,28 @@ class ReviewResult:
     output: Optional[str] = None
     events: List[Mapping[str, Any]] = field(default_factory=list)
     partial_progress: Optional[str] = None
+    execution_status: Optional[str] = None
+    review_verdict: str = "not_evaluated"
+    gate_status: str = "not_evaluated"
+    duration_ms: Optional[int] = None
+    terminal_event: Optional[str] = None
+    event_counts: Mapping[str, int] = field(default_factory=dict)
+    raw_output_bytes: Optional[int] = None
+    scope_fingerprint: Optional[str] = None
+    packet_sha256: Optional[str] = None
+    prompt_sha256: Optional[str] = None
+    policy_violation: Optional[Mapping[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return the v2 envelope while retaining v1 dictionary keys."""
+        execution_status = self.execution_status
+        if execution_status is None:
+            if self.timed_out:
+                execution_status = "timed_out"
+            elif self.success or self.terminal_event == "turn.completed":
+                execution_status = "completed"
+            else:
+                execution_status = "failed"
         return {
             "schema_version": 2,
             "success": self.success,
@@ -57,6 +76,21 @@ class ReviewResult:
             "output": self.output,
             "events": list(self.events),
             "partial_progress": self.partial_progress,
+            "execution_status": execution_status,
+            "review_verdict": self.review_verdict,
+            "gate_status": self.gate_status,
+            "duration_ms": self.duration_ms,
+            "terminal_event": self.terminal_event,
+            "event_counts": dict(self.event_counts),
+            "raw_output_bytes": self.raw_output_bytes,
+            "scope_fingerprint": self.scope_fingerprint,
+            "packet_sha256": self.packet_sha256,
+            "prompt_sha256": self.prompt_sha256,
+            "policy_violation": (
+                dict(self.policy_violation)
+                if self.policy_violation is not None
+                else None
+            ),
             # Compatibility aliases used by v1 callers.
             "command": self.command,
             "final": self.final,

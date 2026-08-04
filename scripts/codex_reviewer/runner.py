@@ -103,6 +103,29 @@ def has_turn_completed(events: Sequence[Mapping[str, object]]) -> bool:
     return any(event.get("type") == "turn.completed" for event in events)
 
 
+def terminal_event_type(
+    events: Sequence[Mapping[str, object]],
+) -> Optional[str]:
+    for event in reversed(events):
+        event_type = event.get("type")
+        if event_type in {"turn.completed", "turn.failed"}:
+            return str(event_type)
+    return None
+
+
+def count_events(events: Sequence[Mapping[str, object]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for event in events:
+        event_type = event.get("type")
+        if isinstance(event_type, str):
+            counts[event_type] = counts.get(event_type, 0) + 1
+        item = event.get("item")
+        if isinstance(item, Mapping) and isinstance(item.get("type"), str):
+            item_key = f"item.{item['type']}"
+            counts[item_key] = counts.get(item_key, 0) + 1
+    return counts
+
+
 def extract_item_warnings(
     events: Sequence[Mapping[str, object]],
 ) -> List[str]:
@@ -484,6 +507,8 @@ class CodexProcessRunner:
             ]
             safe_output = self._redact_text(output, sensitive)
             safe_events = [self._redact_payload(event, sensitive) for event in events]
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            terminal_event = terminal_event_type(events)
             partial_progress = None
             if not success:
                 partial = extract_last_agent_message(events)
@@ -518,6 +543,13 @@ class CodexProcessRunner:
                 output=safe_output,
                 events=safe_events,
                 partial_progress=partial_progress,
+                execution_status=(
+                    "timed_out" if timed_out else "completed" if turn_completed else "failed"
+                ),
+                duration_ms=duration_ms,
+                terminal_event=terminal_event,
+                event_counts=count_events(events),
+                raw_output_bytes=len(output.encode("utf-8")),
             ).to_dict()
         except FileNotFoundError:
             return ReviewResult(
