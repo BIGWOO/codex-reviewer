@@ -10,6 +10,7 @@ from .catalog import (
     PresetResolutionError,
     resolve_model_selection,
 )
+from .bounded import BoundedPacket, BoundedScopeError, build_bounded_packet
 from .commands import CommandBuilder, CommandSpec
 from .gate import derive_bundled_gate, gate_exit_code
 from .result import ReviewResult
@@ -20,6 +21,8 @@ from .updates import UpdateOutcome, prepare_codex_binary
 __all__ = [
     "DEFAULT_PRESET",
     "MIN_CODEX_VERSION",
+    "BoundedPacket",
+    "BoundedScopeError",
     "CodexBinary",
     "CodexReviewer",
     "CommandBuilder",
@@ -27,6 +30,7 @@ __all__ = [
     "DiffMetrics",
     "derive_bundled_gate",
     "gate_exit_code",
+    "build_bounded_packet",
     "GitInspector",
     "ModelCatalog",
     "ModelInfo",

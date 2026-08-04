@@ -15,6 +15,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for review_type in (
             "native-review",
+            "bounded-review",
             "security",
             "performance",
             "architecture",

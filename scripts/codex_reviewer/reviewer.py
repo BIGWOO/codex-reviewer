@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .bounded import BoundedPacket
 from .catalog import (
     DEFAULT_PRESET,
     MIN_CODEX_VERSION,
@@ -267,12 +268,15 @@ class CodexReviewer:
         return result
 
     def _prepare(
-        self, *, native: bool, effort_override: Optional[str] = None
+        self,
+        *,
+        native: bool,
+        effort_override: Optional[str] = None,
+        failure_mode: Optional[str] = None,
     ) -> Optional[Dict[str, object]]:
+        mode = failure_mode or ("native" if native else "generic")
         if not self.binary.path or self.binary.error or not self.binary.supported:
-            return self._failure(
-                "native" if native else "generic", _version_failure(self.binary)
-            )
+            return self._failure(mode, _version_failure(self.binary))
         if self.binary.version and self.binary.version > VERIFIED_CODEX_VERSION:
             verified = format_version(VERIFIED_CODEX_VERSION)
             warning = (
@@ -293,7 +297,7 @@ class CodexReviewer:
                 explicit_effort=effort_override or self.explicit_effort,
             )
         except PresetResolutionError as exc:
-            return self._failure("native" if native else "generic", str(exc))
+            return self._failure(mode, str(exc))
         self._base_warnings.extend(
             warning
             for warning in self.selection.warnings
@@ -317,7 +321,7 @@ class CodexReviewer:
             )
         validation_error = self._validate_capabilities(native=native)
         if validation_error:
-            return self._failure("native" if native else "generic", validation_error)
+            return self._failure(mode, validation_error)
         return None
 
     def _validate_capabilities(self, *, native: bool) -> Optional[str]:
@@ -788,6 +792,49 @@ class CodexReviewer:
             validate_bundled_shape=uses_bundled_schema,
             sensitive_values=(extra,),
         )
+
+    def bounded_review(self, packet: BoundedPacket) -> Dict[str, object]:
+        """Review a caller-built packet without asking the child to inspect Git."""
+        def attach_packet_metadata(result: Dict[str, object]) -> Dict[str, object]:
+            result["scope"] = dict(packet.scope)
+            result["scope_fingerprint"] = packet.scope_fingerprint
+            result["packet_sha256"] = packet.packet_sha256
+            result["prompt_sha256"] = packet.prompt_sha256
+            return result
+
+        if self.cwd and str(Path(self.cwd).resolve()) != packet.repository:
+            return attach_packet_metadata(
+                self._failure(
+                    "bounded", "Bounded packet repository does not match --cd"
+                )
+            )
+        self.cwd = packet.repository
+        schema = str(BUNDLED_SCHEMA)
+        original_schema = self.schema_file
+        self.schema_file = schema
+        preparation_error = self._prepare(native=False, failure_mode="bounded")
+        self.schema_file = original_schema
+        if preparation_error:
+            return attach_packet_metadata(preparation_error)
+        schema_error = self._validate_schema(Path(schema))
+        if schema_error:
+            return attach_packet_metadata(self._failure("bounded", schema_error))
+        inspector = self._inspector()
+        self._resource_roots = [packet.repository]
+        warnings = list(
+            dict.fromkeys([*self._base_warnings, *inspector.environment_warnings])
+        )
+        spec = self._builder(schema_file=schema).generic(packet.prompt)
+        result = self._execute(
+            spec,
+            mode="bounded",
+            scope_payload=packet.scope,
+            warnings=warnings,
+            structured=True,
+            validate_bundled_shape=True,
+            sensitive_values=(packet.prompt,),
+        )
+        return attach_packet_metadata(result)
 
     def run_review(
         self,

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
+from .bounded import BoundedScopeError, build_bounded_packet, load_json_object
 from .catalog import DEFAULT_PRESET, PRESET_NAMES
 from .gate import gate_exit_code
 from .result import error_result
@@ -25,6 +26,7 @@ from .reviewer import (
 REVIEW_TYPES = (
     "native-review",
     "structured-review",
+    "bounded-review",
     "security",
     "performance",
     "architecture",
@@ -170,6 +172,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON manifest declaring every repository and Git scope for a generic review.",
     )
     parser.add_argument(
+        "--bounded-scope",
+        help="Version 1 bounded scope JSON file; required by bounded-review.",
+    )
+    parser.add_argument(
+        "--evidence-json",
+        help="Optional caller-executed check evidence JSON file for bounded-review.",
+    )
+    parser.add_argument(
         "--allow-large-diff",
         action="store_true",
         help="Bypass the large-diff guard intentionally.",
@@ -291,7 +301,13 @@ def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
                 pass
     input_values = [
         value
-        for value in (args.schema_file, args.scope_manifest, *args.images)
+        for value in (
+            args.schema_file,
+            args.scope_manifest,
+            args.bounded_scope,
+            args.evidence_json,
+            *args.images,
+        )
         if value
     ]
     resolved_inputs = {
@@ -310,14 +326,15 @@ def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
     collisions = sorted(set(collisions))
     if collisions:
         return (
-            "Output paths must not overwrite --schema, --scope-manifest, or --image inputs: "
+            "Output paths must not overwrite schema, scope, evidence, or image inputs: "
             + ", ".join(collisions)
         )
     return None
 
 
 def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
-    ignore_user_config = args.ignore_user_config or args.isolated
+    bounded = args.review_type == "bounded-review"
+    ignore_user_config = bounded or args.ignore_user_config or args.isolated
     ignore_rules = args.ignore_rules or args.isolated
     review_range = args.review_range
     if not review_range and args.review_type == "diff" and args.target:
@@ -355,10 +372,71 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         strict_config=args.strict_config,
         fast=args.fast,
         dry_run=args.dry_run,
-        minimal_context=args.minimal_context,
+        minimal_context=True if bounded else args.minimal_context,
         update_check=not args.no_update_check,
         force_update_check=args.force_update_check,
     )
+
+
+def _validate_bounded_args(args: argparse.Namespace, preset: str) -> Optional[str]:
+    if not args.bounded_scope:
+        return "bounded-review requires --bounded-scope"
+    if args.target or args.extra:
+        return "bounded-review does not accept a target or positional prompt"
+    if preset not in {"standard", "deep"}:
+        return "bounded-review supports only --preset standard or explicit --preset deep"
+    conflicts = []
+    if args.model:
+        conflicts.append("--model")
+    if args.reasoning_effort:
+        conflicts.append("--reasoning-effort")
+    if args.quick:
+        conflicts.append("--quick")
+    if args.instructions:
+        conflicts.append("--instructions")
+    if args.profile:
+        conflicts.append("--profile")
+    if args.schema_file:
+        conflicts.append("--schema")
+    if args.search:
+        conflicts.append("--search")
+    if args.images:
+        conflicts.append("--image")
+    if args.add_dirs:
+        conflicts.append("--add-dir")
+    if args.scope_manifest:
+        conflicts.append("--scope-manifest")
+    if args.review_range:
+        conflicts.append("--review-range")
+    if not args.minimal_context:
+        conflicts.append("--full-context")
+    if args.isolated:
+        conflicts.append("--isolated")
+    if args.fast:
+        conflicts.append("--fast")
+    if args.text:
+        conflicts.append("--text")
+    if args.skip_git_repo_check:
+        conflicts.append("--skip-git-repo-check")
+    if args.persist_session:
+        conflicts.append("--persist-session")
+    if args.long_context:
+        conflicts.append("--long-context")
+    if args.context_window is not None:
+        conflicts.append("--context-window")
+    if args.auto_compact_token_limit is not None:
+        conflicts.append("--auto-compact-token-limit")
+    if args.base:
+        conflicts.append("--base")
+    if args.commit:
+        conflicts.append("--commit")
+    if args.uncommitted:
+        conflicts.append("--uncommitted")
+    if args.title:
+        conflicts.append("--title")
+    if conflicts:
+        return "bounded-review cannot be combined with: " + ", ".join(conflicts)
+    return None
 
 
 def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
@@ -370,6 +448,13 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
             args.review_type, "--quick cannot be combined with a non-quick --preset"
         )
     preset = "quick" if args.quick else (args.preset or DEFAULT_PRESET)
+    if args.review_type != "bounded-review" and (
+        args.bounded_scope or args.evidence_json
+    ):
+        return _error(
+            args.review_type,
+            "--bounded-scope and --evidence-json are only valid for bounded-review",
+        )
     if args.profile and (args.ignore_user_config or args.isolated):
         return _error(
             args.review_type,
@@ -383,6 +468,7 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
     if args.scope_manifest and args.review_type in {
         "native-review",
         "structured-review",
+        "bounded-review",
         "doctor",
     }:
         return _error(
@@ -402,6 +488,34 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
             force_update_check=args.force_update_check,
         )
         return result
+
+    if args.review_type == "bounded-review":
+        bounded_error = _validate_bounded_args(args, preset)
+        if bounded_error:
+            return _error("bounded", bounded_error)
+        assert args.bounded_scope is not None
+        try:
+            scope = load_json_object(args.bounded_scope, "bounded scope")
+            evidence = (
+                load_json_object(args.evidence_json, "evidence")
+                if args.evidence_json
+                else None
+            )
+            packet = build_bounded_packet(
+                args.cwd or os.getcwd(), scope, evidence=evidence
+            )
+        except BoundedScopeError as exc:
+            return _error("bounded", str(exc))
+        if not args.allow_large_diff and (
+            packet.metrics["files"] > args.max_changed_files
+            or packet.metrics["lines"] > args.max_diff_lines
+        ):
+            return _error(
+                "bounded",
+                "Bounded packet exceeds the large-review threshold: "
+                f"{packet.metrics['files']} files and {packet.metrics['lines']} lines",
+            )
+        return _reviewer(args, preset).bounded_review(packet)
 
     if args.review_type not in {"native-review", "structured-review"}:
         if args.base or args.commit or args.uncommitted or args.title:
