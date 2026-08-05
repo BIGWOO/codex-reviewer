@@ -196,7 +196,7 @@ Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設
 
 Status 只接受 `passed`、`failed`、`not_run`。Scope／evidence 都拒絕未知欄位；scope 另拒絕絕對路徑、`..`、重複／重疊／越界 range、binary 與無效 ref。Git 抽取在主程序完成，Codex stdin 只收到 canonical JSON packet。Result envelope 會記錄實際 files／lines／bytes、scope fingerprint、packet hash 與 prompt hash。
 
-Bounded 固定 bundled schema、`standard` 預設、`--ignore-user-config`、minimal context、零工具與 262144-byte JSONL 預算；可顯式選 `deep`，但不會自動升級。它拒絕 search、images、full-context、profile、isolated、add-dir、scope-manifest 與自訂 schema/prompt。
+Bounded 固定 bundled schema、`standard` 預設、`--ignore-user-config`、minimal context、零工具與 262144-byte JSONL 預算；預設 absolute hard timeout 為 600 秒並停用 idle timeout，避免無工具的靜默推理被誤判為停滯。可顯式選 `deep`，但不會自動升級。它拒絕 search、images、full-context、profile、isolated、add-dir、scope-manifest 與自訂 schema/prompt。
 
 ## Useful Options
 
@@ -216,8 +216,8 @@ Bounded 固定 bundled schema、`standard` 預設、`--ignore-user-config`、min
 - `--enforce-gate`：passed／warnings exit 0、blocked exit 2、failure／inconclusive exit 1。
 - `--max-tool-calls <N>`：既有模式預設 unlimited；bounded 固定 0。
 - `--max-jsonl-bytes <N>`：既有模式預設 unlimited；bounded 預設 262144。
-- `--idle-timeout <SECONDS>`：無 stdout/stderr 活動的停滯上限；設為 `0` 可停用。
-- `--hard-timeout <SECONDS>`：整次執行的絕對上限；`--timeout` 保留為相容 hard timeout。
+- `--idle-timeout <SECONDS>`：無 stdout/stderr 活動的停滯上限；bounded 預設 `0`（停用），既有模式預設 `180`。
+- `--hard-timeout <SECONDS>`：整次執行的絕對上限；bounded 預設 `600`，既有模式預設 `300`；`--timeout` 保留為相容 hard timeout。
 - `--minimal-context`／`--full-context`：預設停用 plugins、apps、multi-agent，但不代表停用一般 skills 或所有 MCP。
 - `--ignore-user-config`：忽略 base user config；`--isolated` 另外忽略 rules，兩者用途不同。
 - `--allow-large-diff`：越過一般大型 diff guard；應先拆 task 或 module，且不能用於 `max`。

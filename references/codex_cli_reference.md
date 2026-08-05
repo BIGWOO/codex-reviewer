@@ -220,7 +220,7 @@ CLI help 會在 `codex exec review` 顯示 `--output-schema`，exec parser 也�
 
 `references/review_output_schema.json` 採用 native-compatible field names，但只保證 generic `codex exec` 的 schema enforcement。
 
-Helper 的 `--result-json <FILE>` 另外寫入精簡的 v2 execution envelope，不取代 stdout final message。`success` 保留執行完成語意；`execution_status`、`review_verdict`、`gate_status` 分開記錄 process、structured verdict 與 delivery gate。Envelope 另包含 duration、terminal event、event counts、raw bytes、policy violation，以及 bounded scope／packet／prompt hashes。Raw JSONL 只由 `--output` 保存；只有明確使用 `--include-events` 才會在 envelope 加入已遮蔽 events。Timeout 或 policy violation 的 `partial_progress` 永遠是未驗證進度，不是 final result。
+Helper 的 `--result-json <FILE>` 另外寫入精簡的 v2 execution envelope，不取代 stdout final message。`success` 保留執行完成語意；`execution_status`、`review_verdict`、`gate_status` 分開記錄 process、structured verdict 與 delivery gate。Envelope 另包含 duration、`terminal_event`、最後解析的 `last_event`、timeout 當下的 `silence_duration_ms`、event counts、raw bytes、policy violation，以及 bounded scope／packet／prompt hashes。Raw JSONL 只由 `--output` 保存；只有明確使用 `--include-events` 才會在 envelope 加入已遮蔽 events。Timeout 或 policy violation 的 `partial_progress` 永遠是未驗證進度，不是 final result。
 
 `--enforce-gate` 的 exit contract：`passed`／`passed_with_warnings` 為 0、`blocked` 為 2、執行失敗／`inconclusive`／`not_evaluated` 為 1。P0–P2 都會 block；只有 P3 是 warning。
 
@@ -299,7 +299,7 @@ Generic 跨 repo review 使用 version 1 scope manifest：
 
 支援的 `kind` 是 `uncommitted`、`base`、`commit`、`range`。每個 scope 都會獨立以 NUL-safe Git 命令 sizing，再聚合檔案數與 changed lines。Deep custom review 沒有 `--scope-manifest` 或 `--review-range` 時直接失敗。
 
-執行時間使用兩個界線：`--idle-timeout` 偵測 Codex 無輸出停滯，`--hard-timeout` 是絕對上限；既有 `--timeout` 保留為 hard timeout 相容參數。
+執行時間使用兩個界線：`--idle-timeout` 偵測 Codex 無輸出停滯，`--hard-timeout` 是絕對上限；既有 `--timeout` 保留為 hard timeout 相容參數。Bounded 預設 hard 600 秒、idle 0（停用），因 packet-only／零工具推理可能長時間沒有 JSONL event；native 與其他 generic mode 維持 hard 300／idle 180。任何顯式 timeout 都優先於 mode default。
 
 `--max-tool-calls` 與 `--max-jsonl-bytes` 對既有模式預設 unlimited。Bounded 固定 max tools 0，JSONL 預設 262144 bytes；超限時 helper 立即終止 process group、保存 raw/partial evidence，且永遠不產生成功 final。Timeout 後不得在 scope 不變時只替換 mode、preset、`--ignore-user-config` 或 `--isolated` 重試。
 

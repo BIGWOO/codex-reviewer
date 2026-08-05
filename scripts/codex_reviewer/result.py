@@ -34,7 +34,9 @@ class ReviewResult:
     review_verdict: str = "not_evaluated"
     gate_status: str = "not_evaluated"
     duration_ms: Optional[int] = None
+    silence_duration_ms: Optional[int] = None
     terminal_event: Optional[str] = None
+    last_event: Optional[str] = None
     event_counts: Mapping[str, int] = field(default_factory=dict)
     raw_output_bytes: Optional[int] = None
     scope_fingerprint: Optional[str] = None
@@ -80,7 +82,9 @@ class ReviewResult:
             "review_verdict": self.review_verdict,
             "gate_status": self.gate_status,
             "duration_ms": self.duration_ms,
+            "silence_duration_ms": self.silence_duration_ms,
             "terminal_event": self.terminal_event,
+            "last_event": self.last_event,
             "event_counts": dict(self.event_counts),
             "raw_output_bytes": self.raw_output_bytes,
             "scope_fingerprint": self.scope_fingerprint,

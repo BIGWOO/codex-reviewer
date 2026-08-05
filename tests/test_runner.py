@@ -482,6 +482,10 @@ class ProcessRunnerTests(unittest.TestCase):
 
         self.assertEqual(idle["timeout_reason"], "idle")
         self.assertEqual(hard["timeout_reason"], "hard")
+        self.assertIsNone(idle["terminal_event"])
+        self.assertEqual(idle["last_event"], "thread.started")
+        self.assertEqual(hard["last_event"], "item.completed:reasoning")
+        self.assertGreaterEqual(idle["silence_duration_ms"], 800)
 
     def test_large_stdin_write_remains_timeout_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

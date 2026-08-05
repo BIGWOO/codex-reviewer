@@ -141,7 +141,9 @@ class CliContractTests(unittest.TestCase):
             "review_verdict",
             "gate_status",
             "duration_ms",
+            "silence_duration_ms",
             "terminal_event",
+            "last_event",
             "event_counts",
             "raw_output_bytes",
             "scope_fingerprint",
@@ -161,7 +163,12 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(envelope["execution_status"], "completed")
         self.assertEqual(envelope["review_verdict"], "not_evaluated")
         self.assertEqual(envelope["gate_status"], "not_evaluated")
+        self.assertEqual(envelope["timeout"], 300)
+        self.assertEqual(envelope["hard_timeout"], 300)
+        self.assertEqual(envelope["idle_timeout"], 180)
+        self.assertGreaterEqual(envelope["silence_duration_ms"], 0)
         self.assertEqual(envelope["terminal_event"], "turn.completed")
+        self.assertEqual(envelope["last_event"], "turn.completed")
         self.assertGreater(envelope["raw_output_bytes"], 0)
         self.assertGreaterEqual(envelope["event_counts"]["turn.completed"], 1)
 

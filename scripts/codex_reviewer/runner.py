@@ -122,6 +122,22 @@ def terminal_event_type(
     return None
 
 
+def last_event_type(
+    events: Sequence[Mapping[str, object]],
+) -> Optional[str]:
+    """Return the final parsed JSONL event type, including an item subtype."""
+    if not events:
+        return None
+    event = events[-1]
+    event_type = event.get("type")
+    if not isinstance(event_type, str):
+        return None
+    item = event.get("item")
+    if isinstance(item, Mapping) and isinstance(item.get("type"), str):
+        return f"{event_type}:{item['type']}"
+    return event_type
+
+
 def count_events(events: Sequence[Mapping[str, object]]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for event in events:
@@ -334,13 +350,14 @@ class CodexProcessRunner:
         stdout_lines: List[str] = []
         stderr_lines: List[str] = []
         events: List[Mapping[str, object]] = []
-        event_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
+        event_queue: "queue.Queue[Tuple[str, str, float]]" = queue.Queue()
         started_at = time.monotonic()
         last_activity_at = started_at
         last_heartbeat = started_at
         process: Optional[subprocess.Popen[str]] = None
         timed_out = False
         timeout_reason: Optional[str] = None
+        timeout_silence_duration_ms: Optional[int] = None
         stdin_thread: Optional[threading.Thread] = None
         stdin_errors: List[str] = []
         lock_descriptors: List[int] = []
@@ -353,7 +370,7 @@ class CodexProcessRunner:
         def read_stream(stream, stream_name: str) -> None:
             try:
                 for line in iter(stream.readline, ""):
-                    event_queue.put((stream_name, line))
+                    event_queue.put((stream_name, line, time.monotonic()))
             finally:
                 stream.close()
 
@@ -450,7 +467,7 @@ class CodexProcessRunner:
 
             while True:
                 try:
-                    stream_name, line = event_queue.get(timeout=0.2)
+                    stream_name, line, activity_at = event_queue.get(timeout=0.2)
                     event = self._consume_line(
                         stream_name,
                         line,
@@ -460,7 +477,7 @@ class CodexProcessRunner:
                         output_handle,
                         sensitive,
                     )
-                    last_activity_at = time.monotonic()
+                    last_activity_at = max(last_activity_at, activity_at)
                     if stream_name == "stdout":
                         raw_output_bytes_seen += len(line.encode("utf-8"))
                         if event is not None:
@@ -519,11 +536,17 @@ class CodexProcessRunner:
                 if now - started_at > self.timeout:
                     timed_out = True
                     timeout_reason = "hard"
+                    timeout_silence_duration_ms = max(
+                        0, int((now - last_activity_at) * 1000)
+                    )
                     self._terminate_process_group(process)
                     break
                 if self.idle_timeout and now - last_activity_at > self.idle_timeout:
                     timed_out = True
                     timeout_reason = "idle"
+                    timeout_silence_duration_ms = max(
+                        0, int((now - last_activity_at) * 1000)
+                    )
                     self._terminate_process_group(process)
                     break
 
@@ -532,7 +555,7 @@ class CodexProcessRunner:
             if stdin_thread:
                 stdin_thread.join(timeout=2)
             while not event_queue.empty():
-                stream_name, line = event_queue.get_nowait()
+                stream_name, line, activity_at = event_queue.get_nowait()
                 self._consume_line(
                     stream_name,
                     line,
@@ -542,6 +565,7 @@ class CodexProcessRunner:
                     output_handle,
                     sensitive,
                 )
+                last_activity_at = max(last_activity_at, activity_at)
             if process.poll() is None:
                 process.wait(timeout=2)
 
@@ -629,8 +653,15 @@ class CodexProcessRunner:
                 if policy_violation is not None
                 else None
             )
-            duration_ms = int((time.monotonic() - started_at) * 1000)
+            finished_at = time.monotonic()
+            duration_ms = int((finished_at - started_at) * 1000)
+            silence_duration_ms = (
+                timeout_silence_duration_ms
+                if timeout_silence_duration_ms is not None
+                else max(0, int((finished_at - last_activity_at) * 1000))
+            )
             terminal_event = terminal_event_type(events)
+            last_event = last_event_type(events)
             event_counts = count_events(events)
             event_counts["tool_calls"] = tool_call_count
             partial_progress = None
@@ -677,7 +708,9 @@ class CodexProcessRunner:
                     else "failed"
                 ),
                 duration_ms=duration_ms,
+                silence_duration_ms=silence_duration_ms,
                 terminal_event=terminal_event,
+                last_event=last_event,
                 event_counts=event_counts,
                 raw_output_bytes=len(output.encode("utf-8")),
                 policy_violation=safe_policy_violation,

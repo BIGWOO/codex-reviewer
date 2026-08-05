@@ -459,6 +459,9 @@ class BoundedCliTests(unittest.TestCase):
         self.assertEqual(envelope["prompt_sha256"], envelope["packet_sha256"])
         self.assertEqual(envelope["gate_status"], "passed")
         self.assertEqual(envelope["event_counts"]["tool_calls"], 0)
+        self.assertEqual(envelope["timeout"], 600)
+        self.assertEqual(envelope["hard_timeout"], 600)
+        self.assertEqual(envelope["idle_timeout"], 0)
 
     def test_bounded_default_zero_tool_policy_is_inconclusive_and_keeps_raw(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -505,6 +508,114 @@ class BoundedCliTests(unittest.TestCase):
         self.assertEqual(envelope["policy_violation"]["reason"], "tool_call")
         self.assertIsNone(envelope["final_result"])
         self.assertIn("command_execution", raw)
+
+    def test_bounded_explicit_timeouts_override_mode_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            scope_path = write_json(
+                root / "scope.json",
+                {
+                    "version": 1,
+                    "kind": "commit_snapshot",
+                    "commit": "HEAD",
+                    "files": [
+                        {"path": "app.py", "ranges": [{"start": 1, "end": 2}]}
+                    ],
+                },
+            )
+            binary = make_fake_codex(root)
+            compatible_result_path = root / "compatible-result.json"
+            compatible = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--bounded-scope",
+                str(scope_path),
+                "--timeout",
+                "420",
+                "--idle-timeout",
+                "120",
+                "--result-json",
+                str(compatible_result_path),
+                "bounded-review",
+            )
+            compatible_envelope = json.loads(
+                compatible_result_path.read_text(encoding="utf-8")
+            )
+            hard_result_path = root / "hard-result.json"
+            hard = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--bounded-scope",
+                str(scope_path),
+                "--timeout",
+                "420",
+                "--hard-timeout",
+                "480",
+                "--idle-timeout",
+                "120",
+                "--result-json",
+                str(hard_result_path),
+                "bounded-review",
+            )
+            hard_envelope = json.loads(
+                hard_result_path.read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(compatible.returncode, 0, compatible.stderr)
+        self.assertEqual(compatible_envelope["timeout"], 420)
+        self.assertEqual(compatible_envelope["hard_timeout"], 420)
+        self.assertEqual(compatible_envelope["idle_timeout"], 120)
+        self.assertEqual(hard.returncode, 0, hard.stderr)
+        self.assertEqual(hard_envelope["timeout"], 480)
+        self.assertEqual(hard_envelope["hard_timeout"], 480)
+        self.assertEqual(hard_envelope["idle_timeout"], 120)
+
+    def test_bounded_hard_timeout_records_last_event_and_timeout_silence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            scope_path = write_json(
+                root / "scope.json",
+                {
+                    "version": 1,
+                    "kind": "commit_snapshot",
+                    "commit": "HEAD",
+                    "files": [
+                        {"path": "app.py", "ranges": [{"start": 1, "end": 2}]}
+                    ],
+                },
+            )
+            binary = make_fake_codex(root)
+            result_path = root / "timeout-result.json"
+            result = run_cli(
+                "--codex-bin",
+                str(binary),
+                "--cd",
+                str(repo),
+                "--bounded-scope",
+                str(scope_path),
+                "--hard-timeout",
+                "1",
+                "--result-json",
+                str(result_path),
+                "bounded-review",
+                env={"FAKE_CODEX_SLEEP": "120"},
+            )
+            envelope = json.loads(result_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(envelope["success"])
+        self.assertEqual(envelope["execution_status"], "timed_out")
+        self.assertEqual(envelope["timeout_reason"], "hard")
+        self.assertEqual(envelope["gate_status"], "inconclusive")
+        self.assertIsNone(envelope["terminal_event"])
+        self.assertEqual(envelope["last_event"], "thread.started")
+        self.assertGreaterEqual(envelope["silence_duration_ms"], 800)
 
     def test_bounded_review_rejects_context_and_scope_expansion_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

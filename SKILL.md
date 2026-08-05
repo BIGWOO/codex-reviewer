@@ -118,6 +118,8 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 
 `--max-tool-calls` 與 `--max-jsonl-bytes` 對既有模式預設 unlimited；bounded 固定零工具並預設最多 262144 JSONL bytes。Policy violation、timeout 或缺少終態都不得視為 final success。Scope 不變時禁止只替換 mode／preset／隔離旗標重試 timeout；先縮小 packet 或由 caller 明確決定下一步。
 
+Bounded review 預設 `--hard-timeout 600` 並停用 idle timeout（effective `--idle-timeout 0`）；零工具推理可能長時間沒有 JSONL event，不能把靜默本身當成 hang。Native／其他 generic mode 維持 hard 300／idle 180。Caller 顯式傳入的 timeout 仍優先。
+
 ## Quality Gate
 
 把 reviewer 當成獨立證據來源，不是裁決者：

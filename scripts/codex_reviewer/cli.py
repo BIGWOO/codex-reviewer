@@ -14,6 +14,8 @@ from .catalog import DEFAULT_PRESET, PRESET_NAMES
 from .gate import gate_exit_code
 from .result import error_result
 from .reviewer import (
+    DEFAULT_BOUNDED_IDLE_TIMEOUT,
+    DEFAULT_BOUNDED_TIMEOUT,
     DEFAULT_MAX_CHANGED_FILES,
     DEFAULT_MAX_DIFF_LINES,
     DEFAULT_IDLE_TIMEOUT,
@@ -132,7 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--schema", dest="schema_file", help="JSON Schema for generic final output."
     )
     parser.add_argument(
-        "--timeout", type=int, default=DEFAULT_TIMEOUT, help="Timeout in seconds."
+        "--timeout",
+        type=int,
+        help=(
+            "Compatible hard timeout in seconds; defaults to 600 for bounded-review "
+            "and 300 for existing modes."
+        ),
     )
     parser.add_argument(
         "--hard-timeout",
@@ -142,8 +149,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--idle-timeout",
         type=int,
-        default=DEFAULT_IDLE_TIMEOUT,
-        help="Terminate when Codex emits no stdout or stderr activity for this many seconds; 0 disables it.",
+        help=(
+            "Terminate when Codex emits no stdout or stderr activity for this many "
+            "seconds; defaults to 0 for bounded-review and 180 for existing modes."
+        ),
     )
     parser.add_argument(
         "--quick",
@@ -344,6 +353,16 @@ def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
 
 def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
     bounded = args.review_type == "bounded-review"
+    hard_timeout = args.hard_timeout
+    if hard_timeout is None:
+        hard_timeout = args.timeout
+    if hard_timeout is None:
+        hard_timeout = DEFAULT_BOUNDED_TIMEOUT if bounded else DEFAULT_TIMEOUT
+    idle_timeout = args.idle_timeout
+    if idle_timeout is None:
+        idle_timeout = (
+            DEFAULT_BOUNDED_IDLE_TIMEOUT if bounded else DEFAULT_IDLE_TIMEOUT
+        )
     max_tool_calls = (
         0 if bounded and args.max_tool_calls is None else args.max_tool_calls
     )
@@ -365,8 +384,8 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         cwd=args.cwd,
         add_dirs=args.add_dirs,
         schema_file=args.schema_file,
-        timeout=args.hard_timeout if args.hard_timeout is not None else args.timeout,
-        idle_timeout=args.idle_timeout,
+        timeout=hard_timeout,
+        idle_timeout=idle_timeout,
         skip_git_repo_check=args.skip_git_repo_check,
         reasoning_effort=args.reasoning_effort,
         output_file=args.output,
@@ -632,7 +651,9 @@ def _public_result_envelope(
         "review_verdict",
         "gate_status",
         "duration_ms",
+        "silence_duration_ms",
         "terminal_event",
+        "last_event",
         "event_counts",
         "raw_output_bytes",
         "scope_fingerprint",
