@@ -48,6 +48,7 @@ class CommandBuilder:
         auto_compact_token_limit: Optional[int] = None,
         git_path: Optional[str] = None,
         minimal_context: bool = True,
+        no_tools: bool = False,
     ):
         if not binary.path:
             raise ValueError(binary.error or "Codex CLI not found")
@@ -72,6 +73,7 @@ class CommandBuilder:
         self.auto_compact_token_limit = auto_compact_token_limit
         self.git_path = git_path
         self.minimal_context = minimal_context
+        self.no_tools = no_tools
 
     def generic(self, prompt: str) -> CommandSpec:
         if not prompt.strip():
@@ -122,6 +124,8 @@ class CommandBuilder:
         ]
         if self.service_tier:
             argv.extend(["--config", f"service_tier={json.dumps(self.service_tier)}"])
+        if self.no_tools:
+            argv.extend(["--disable", "shell_tool", "--config", 'web_search="disabled"'])
         if self.minimal_context:
             argv.extend(
                 [

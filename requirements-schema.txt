@@ -1,0 +1,2 @@
+# Optional: only needed for --schema. Built-in review formats use the stdlib.
+jsonschema==4.26.0

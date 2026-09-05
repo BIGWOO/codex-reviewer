@@ -148,6 +148,14 @@ def main() -> int:
         )
         return 0
 
+    if "features" in args and "list" in args:
+        _append_log(None)
+        if os.environ.get("FAKE_CODEX_UNSUPPORTED_CONTROLS"):
+            return 2
+        for feature in ("shell_tool", "plugins", "apps", "multi_agent"):
+            print(f"{feature} stable false")
+        return 0
+
     stdin_payload = (
         None
         if os.environ.get("FAKE_CODEX_SKIP_STDIN")
@@ -293,6 +301,8 @@ def main() -> int:
                 }
             )
         for event in events:
+            print(json.dumps(event), flush=True)
+        for event in json.loads(os.environ.get("FAKE_CODEX_TAIL_EVENTS", "[]")):
             print(json.dumps(event), flush=True)
     else:
         print(final_message, flush=True)

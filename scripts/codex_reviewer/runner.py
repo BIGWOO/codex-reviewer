@@ -23,8 +23,16 @@ from .result import ReviewResult
 HEARTBEAT_SECONDS = 30
 ERROR_DETAIL_LIMIT = 8000
 ITEM_WARNING_DETAIL_LIMIT = 500
+
+
+class _ReviewInterrupted(BaseException):
+    def __init__(self, signum: int):
+        self.signum = signum
+
+
 TOOL_ITEM_TYPES = {
     "command_execution": "command",
+    "file_change": "file_change",
     "mcp_tool_call": "mcp",
     "web_search": "web",
     "browser_tool_call": "browser",
@@ -32,6 +40,12 @@ TOOL_ITEM_TYPES = {
     "collaboration_tool_call": "collaboration",
     "dynamic_tool_call": "dynamic",
 }
+
+BOUNDED_EVENT_TYPES = frozenset({
+    "thread.started", "turn.started", "turn.completed", "turn.failed", "error",
+})
+BOUNDED_ITEM_EVENTS = frozenset({"item.started", "item.updated", "item.completed"})
+BOUNDED_SAFE_ITEMS = frozenset({"agent_message", "reasoning", "error"})
 
 try:
     import fcntl
@@ -366,6 +380,14 @@ class CodexProcessRunner:
         tool_call_keys = set()
         tool_call_count = 0
         raw_output_bytes_seen = 0
+        interrupted = False
+        last_message_initialized = False
+        previous_handlers = {}
+        stdout_thread = None
+        stderr_thread = None
+
+        def interrupt(signum, _frame) -> None:
+            raise _ReviewInterrupted(signum)
 
         def read_stream(stream, stream_name: str) -> None:
             try:
@@ -385,7 +407,52 @@ class CodexProcessRunner:
                 except OSError:
                     pass
 
+        def consume(stream_name: str, line: str, activity_at: float) -> None:
+            nonlocal last_activity_at, raw_output_bytes_seen, tool_call_count, policy_violation
+            event = self._consume_line(
+                stream_name, line, stdout_lines, stderr_lines, events,
+                output_handle, sensitive,
+            )
+            last_activity_at = max(last_activity_at, activity_at)
+            if stream_name != "stdout":
+                return
+            raw_output_bytes_seen += len(line.encode("utf-8"))
+            descriptor = tool_call_descriptor(event) if event is not None else None
+            if descriptor is not None:
+                call_id = descriptor.get("call_id")
+                call_key = (
+                    f"{descriptor['category']}:{call_id}" if call_id
+                    else f"event:{len(events)}:{descriptor['item_type']}"
+                )
+                if call_key not in tool_call_keys:
+                    tool_call_keys.add(call_key)
+                    tool_call_count += 1
+                if self.max_tool_calls is not None and tool_call_count > self.max_tool_calls:
+                    policy_violation = policy_violation or {
+                        "reason": "tool_call", "observed": tool_call_count,
+                        "limit": self.max_tool_calls, **descriptor,
+                    }
+            if mode == "bounded" and line.strip():
+                event_type = event.get("type") if event is not None else None
+                item = event.get("item") if event is not None else None
+                known = event_type in BOUNDED_EVENT_TYPES or (
+                    event_type in BOUNDED_ITEM_EVENTS
+                    and isinstance(item, Mapping)
+                    and item.get("type") in BOUNDED_SAFE_ITEMS
+                )
+                if not known:
+                    policy_violation = policy_violation or {"reason": "unknown_event"}
+            if self.max_jsonl_bytes is not None and raw_output_bytes_seen > self.max_jsonl_bytes:
+                policy_violation = policy_violation or {
+                    "reason": "jsonl_bytes_exceeded", "observed": raw_output_bytes_seen,
+                    "limit": self.max_jsonl_bytes,
+                }
+
         try:
+            if threading.current_thread() is threading.main_thread():
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    previous_handlers[signum] = signal.getsignal(signum)
+                    signal.signal(signum, interrupt)
             requested_lock_keys = list(lock_keys or [])
             if lock_key:
                 requested_lock_keys.append(lock_key)
@@ -432,6 +499,7 @@ class CodexProcessRunner:
                 last_message_path.parent.mkdir(parents=True, exist_ok=True)
                 with self._open_private(last_message_path):
                     pass
+                last_message_initialized = True
 
             print(f"[codex-review] starting: {sanitized}", file=sys.stderr, flush=True)
             process = subprocess.Popen(
@@ -468,53 +536,10 @@ class CodexProcessRunner:
             while True:
                 try:
                     stream_name, line, activity_at = event_queue.get(timeout=0.2)
-                    event = self._consume_line(
-                        stream_name,
-                        line,
-                        stdout_lines,
-                        stderr_lines,
-                        events,
-                        output_handle,
-                        sensitive,
-                    )
-                    last_activity_at = max(last_activity_at, activity_at)
-                    if stream_name == "stdout":
-                        raw_output_bytes_seen += len(line.encode("utf-8"))
-                        if event is not None:
-                            descriptor = tool_call_descriptor(event)
-                            if descriptor is not None:
-                                call_id = descriptor.get("call_id")
-                                call_key = (
-                                    f"{descriptor['category']}:{call_id}"
-                                    if call_id
-                                    else f"event:{len(events)}:{descriptor['item_type']}"
-                                )
-                                if call_key not in tool_call_keys:
-                                    tool_call_keys.add(call_key)
-                                    tool_call_count += 1
-                                if (
-                                    self.max_tool_calls is not None
-                                    and tool_call_count > self.max_tool_calls
-                                ):
-                                    policy_violation = {
-                                        "reason": "tool_call",
-                                        "observed": tool_call_count,
-                                        "limit": self.max_tool_calls,
-                                        **descriptor,
-                                    }
-                        if (
-                            policy_violation is None
-                            and self.max_jsonl_bytes is not None
-                            and raw_output_bytes_seen > self.max_jsonl_bytes
-                        ):
-                            policy_violation = {
-                                "reason": "jsonl_bytes_exceeded",
-                                "observed": raw_output_bytes_seen,
-                                "limit": self.max_jsonl_bytes,
-                            }
-                        if policy_violation is not None:
-                            self._terminate_process_group(process)
-                            break
+                    consume(stream_name, line, activity_at)
+                    if policy_violation is not None:
+                        self._terminate_process_group(process)
+                        break
                 except queue.Empty:
                     pass
 
@@ -556,16 +581,7 @@ class CodexProcessRunner:
                 stdin_thread.join(timeout=2)
             while not event_queue.empty():
                 stream_name, line, activity_at = event_queue.get_nowait()
-                self._consume_line(
-                    stream_name,
-                    line,
-                    stdout_lines,
-                    stderr_lines,
-                    events,
-                    output_handle,
-                    sensitive,
-                )
-                last_activity_at = max(last_activity_at, activity_at)
+                consume(stream_name, line, activity_at)
             if process.poll() is None:
                 process.wait(timeout=2)
 
@@ -589,6 +605,7 @@ class CodexProcessRunner:
                 final = output.strip() or None
             if (
                 not final
+                and policy_violation is None
                 and self.last_message_output
                 and (not self.json_output or turn_completed)
             ):
@@ -715,6 +732,30 @@ class CodexProcessRunner:
                 raw_output_bytes=len(output.encode("utf-8")),
                 policy_violation=safe_policy_violation,
             ).to_dict()
+        except (_ReviewInterrupted, KeyboardInterrupt) as exc:
+            interrupted = True
+            signum = exc.signum if isinstance(exc, _ReviewInterrupted) else signal.SIGINT
+            return ReviewResult(
+                success=False,
+                mode=mode,
+                binary=self.binary.path,
+                version=self.binary.version_string,
+                scope=scope,
+                model=model,
+                effort=effort,
+                timeout=self.timeout,
+                idle_timeout=self.idle_timeout,
+                hard_timeout=self.timeout,
+                service_tier=service_tier,
+                warnings=runtime_warnings,
+                command=sanitized,
+                error=f"Codex review interrupted by signal {signum}",
+                exit_code=128 + int(signum),
+                execution_status="interrupted",
+                review_verdict="inconclusive",
+                gate_status="inconclusive",
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            ).to_dict()
         except FileNotFoundError:
             return ReviewResult(
                 success=False,
@@ -733,8 +774,6 @@ class CodexProcessRunner:
                 error="Codex CLI not found",
             ).to_dict()
         except Exception as exc:
-            if process is not None and process.poll() is None:
-                self._terminate_process_group(process)
             return ReviewResult(
                 success=False,
                 mode=mode,
@@ -752,10 +791,29 @@ class CodexProcessRunner:
                 error=f"Unexpected error: {exc}",
             ).to_dict()
         finally:
-            if output_handle:
-                output_handle.close()
-            for descriptor in reversed(lock_descriptors):
-                self._release_execution_lock(descriptor)
+            try:
+                # A second cancellation must not interrupt child reaping or release
+                # the single-flight lock while the previous reviewer still runs.
+                for signum in previous_handlers:
+                    signal.signal(signum, signal.SIG_IGN)
+                if process is not None and (
+                    interrupted or policy_violation is not None or process.poll() is None
+                ):
+                    self._terminate_process_group(process)
+                for worker in (stdout_thread, stderr_thread, stdin_thread):
+                    if worker is not None:
+                        worker.join(timeout=2)
+                if interrupted and last_message_initialized and last_message_path:
+                    self._write_private(last_message_path, "")
+            finally:
+                try:
+                    if output_handle:
+                        output_handle.close()
+                    for descriptor in reversed(lock_descriptors):
+                        self._release_execution_lock(descriptor)
+                finally:
+                    for signum, handler in previous_handlers.items():
+                        signal.signal(signum, handler)
 
     def _consume_line(
         self,
@@ -843,6 +901,7 @@ class CodexProcessRunner:
                 return
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
+                process.poll()
                 try:
                     os.killpg(process.pid, 0)
                 except ProcessLookupError:

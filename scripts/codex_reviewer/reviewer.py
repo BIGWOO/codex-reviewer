@@ -37,6 +37,7 @@ from .scope import (
     load_scope_manifest,
 )
 from .updates import prepare_codex_binary
+from .schema import SchemaValidationError, load_validator, result_error
 
 
 DEFAULT_MODEL = "gpt-5.6-sol"
@@ -559,7 +560,9 @@ class CodexReviewer:
             payload["preflight_range"] = self.review_range
         return payload, list(dict.fromkeys(warnings)), None
 
-    def _builder(self, *, schema_file: Optional[str] = None) -> CommandBuilder:
+    def _builder(
+        self, *, schema_file: Optional[str] = None, no_tools: bool = False
+    ) -> CommandBuilder:
         assert self.selection is not None
         return CommandBuilder(
             binary=self.binary,
@@ -583,6 +586,7 @@ class CodexReviewer:
             auto_compact_token_limit=self.auto_compact_token_limit,
             git_path=self.git_path,
             minimal_context=self.minimal_context,
+            no_tools=no_tools,
         )
 
     def _execute(
@@ -598,6 +602,14 @@ class CodexReviewer:
         sensitive_values: Sequence[str] = (),
     ) -> Dict[str, object]:
         assert self.selection is not None
+        validator = None
+        if structured and not validate_bundled_shape:
+            if self.schema_file is None:
+                return self._failure(mode, "Custom structured review requires a schema")
+            try:
+                validator = load_validator(Path(self.schema_file))
+            except SchemaValidationError as exc:
+                return self._failure(mode, str(exc))
         for warning in warnings:
             print(f"[codex-review] warning: {warning}", file=sys.stderr, flush=True)
         if self.dry_run:
@@ -678,6 +690,13 @@ class CodexReviewer:
                     verdict, gate = derive_bundled_gate(structured_result)
                     result["review_verdict"] = verdict
                     result["gate_status"] = gate
+            elif validator is not None:
+                validation_error = result_error(validator, structured_result)
+                if validation_error:
+                    result["success"] = False
+                    result["error"] = validation_error
+                    result["review_verdict"] = "inconclusive"
+                    result["gate_status"] = "inconclusive"
             result["structured_result"] = structured_result
         return result
 
@@ -832,6 +851,9 @@ class CodexReviewer:
         self.schema_file = original_schema
         if preparation_error:
             return attach_packet_metadata(preparation_error)
+        control_error = self._bounded_control_error()
+        if control_error:
+            return attach_packet_metadata(self._failure("bounded", control_error))
         schema_error = self._validate_schema(Path(schema))
         if schema_error:
             return attach_packet_metadata(self._failure("bounded", schema_error))
@@ -840,7 +862,7 @@ class CodexReviewer:
         warnings = list(
             dict.fromkeys([*self._base_warnings, *inspector.environment_warnings])
         )
-        spec = self._builder(schema_file=schema).generic(packet.prompt)
+        spec = self._builder(schema_file=schema, no_tools=True).generic(packet.prompt)
         result = self._execute(
             spec,
             mode="bounded",
@@ -851,6 +873,28 @@ class CodexReviewer:
             sensitive_values=(packet.prompt,),
         )
         return attach_packet_metadata(result)
+
+    def _bounded_control_error(self) -> Optional[str]:
+        """Check feature controls without starting a model or modifying config."""
+        required = ("shell_tool", "plugins", "apps", "multi_agent")
+        command = [self.binary.path, "--config", 'web_search="disabled"']
+        for feature in required:
+            command.extend(["--disable", feature])
+        command.extend(["features", "list"])
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=10, check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "Could not verify required bounded-review tool controls"
+        states = {}
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) >= 3:
+                states[fields[0]] = fields[-1]
+        if result.returncode != 0 or any(states.get(feature) != "false" for feature in required):
+            return "Selected Codex CLI cannot disable required bounded-review tools"
+        return None
 
     def run_review(
         self,

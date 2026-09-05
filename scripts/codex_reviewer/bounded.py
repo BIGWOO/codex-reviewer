@@ -655,7 +655,7 @@ class _GitPacketBuilder:
     ) -> bytes:
         try:
             result = subprocess.run(
-                [self.git_path, "-C", str(cwd or self.root), *args],
+                [self.git_path, "--literal-pathspecs", "-C", str(cwd or self.root), *args],
                 capture_output=True,
                 timeout=30,
                 check=False,

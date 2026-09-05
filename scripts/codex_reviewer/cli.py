@@ -14,6 +14,7 @@ from .catalog import DEFAULT_PRESET, PRESET_NAMES
 from .gate import gate_exit_code
 from .result import error_result
 from .reviewer import (
+    BUNDLED_SCHEMA,
     DEFAULT_BOUNDED_IDLE_TIMEOUT,
     DEFAULT_BOUNDED_TIMEOUT,
     DEFAULT_MAX_CHANGED_FILES,
@@ -329,6 +330,8 @@ def _validate_output_paths(args: argparse.Namespace) -> Optional[str]:
         )
         if value
     ]
+    if args.review_type in {"bounded-review", "structured-review"} and not args.schema_file:
+        input_values.append(str(BUNDLED_SCHEMA))
     resolved_inputs = {
         str(Path(value).expanduser().resolve()) for value in input_values
     }
@@ -699,6 +702,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args = parser.parse_intermixed_args()
     else:
         args = parser.parse_intermixed_args(list(argv))
+    output_error = _validate_output_paths(args)
+    if output_error:
+        print(f"Error: {output_error}", file=sys.stderr)
+        return 1
     result = run_from_args(args)
     if args.result_json:
         write_error = _write_result(
@@ -721,4 +728,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if result.get("mode") == "doctor" and result.get("final_result"):
         print(result["final_result"], file=sys.stderr)
     print(f"Error: {result.get('error') or 'Codex review failed'}", file=sys.stderr)
+    if result.get("execution_status") == "interrupted":
+        return int(result.get("exit_code") or 130)
     return 1
