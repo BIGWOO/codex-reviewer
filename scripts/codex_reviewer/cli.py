@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
+from .compat import restrict_file_permissions, configure_console
 from .bounded import BoundedScopeError, build_bounded_packet, load_json_object
 from .catalog import DEFAULT_PRESET, PRESET_NAMES
 from .gate import gate_exit_code
@@ -681,7 +682,7 @@ def _write_result(
             flags |= os.O_NOFOLLOW
         descriptor = os.open(path, flags, 0o600)
         try:
-            os.fchmod(descriptor, 0o600)
+            restrict_file_permissions(descriptor)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 descriptor = -1
                 envelope = _public_result_envelope(
@@ -697,6 +698,7 @@ def _write_result(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    configure_console()
     parser = build_parser()
     if argv is None:
         args = parser.parse_intermixed_args()

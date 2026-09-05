@@ -286,11 +286,19 @@ python3 -m venv "$HOME/.venvs/codex-reviewer"
 - 輸出路徑與範圍、格式、證據或圖片輸入衝突時，退出且不寫入任何輸出；包含符號連結及硬連結別名。
 - 限定範圍的 Git 差異按檔名字面比對，`[id].tsx` 不會展開成其他檔名。
 - 限定範圍模式額外停用命令工具與搜尋，必要停用功能無法確認時提前失敗。檔案修改及未知輸出事件都會阻止通過；事件偵測不代表副作用發生前的完整攔截。
-- Ctrl+C／SIGTERM 先清除子程序再釋放鎖，`execution_status=interrupted`、`success=false`、品質無法確認；退出碼分別為 130／143。程序群組回收在 POSIX 平台驗證，Windows 不宣稱等同保障。
+- Ctrl+C／SIGTERM 先清除子程序再釋放鎖，`execution_status=interrupted`、`success=false`、品質無法確認；退出碼分別為 130／143。Windows Ctrl+Break 同樣視為取消並回傳 130；強制結束程序無法保證產生取消結果檔。
 
 本機驗證使用模擬 CLI 與暫存 Git 專案。完整測試可在上述虛擬環境執行 `python -m unittest discover -s tests -v`；自訂格式測試需要先安裝選填依賴。
 
 2026-09-05 首輪真實審查涵蓋 18 個檔案，約 110 秒完成，發現一個已在本機重現的格式參照問題。修正後只複查格式驗證程式與測試，約 41 秒完成且無發現；原 120 項完整測試之外，另通過新增案例後的 6 項格式驗證測試。這些是單次執行證據，不代表 Astra 審查品質、典型耗時或用量的基準測試。
+
+## Windows 執行相容性
+
+- 與 Codex／Git 的文字交換明確使用 UTF-8，Windows 終端輸出也設定為 UTF-8；無效的模型輸出編碼會回報失敗。
+- 輸出檔不再要求 Windows 不提供的 `os.fchmod`。Windows 沿用目錄的存取權限，不宣稱 POSIX `0600` 等同於 Windows 的私人檔案權限；請將審查結果放在僅本人可存取的目錄。
+- 使用 Windows 原生檔案鎖限制同一專案的並行審查。程序退出後由系統釋放鎖；沒有可用鎖機制時提前失敗。
+- 使用 Windows Job Object 管理啟動器、Codex 與正常建立的子程序。啟動器須先納入管理才能啟動 Codex，取消或逾時會終止整組程序；主代理程序意外退出時由系統清理。若系統限制阻止加入作業物件，提前失敗，不退回無管理的執行模式。
+- 已加入 `windows-latest`、Python 3.10／3.13 的無模型測試：`python -m unittest tests.test_windows_compat -v`。本次開發在 macOS；Windows 原生鎖、作業物件、Ctrl+Break 與 Codex 真實執行仍待 Windows CI／實機驗證，不能以 macOS 測試取代。
 
 ## Files
 

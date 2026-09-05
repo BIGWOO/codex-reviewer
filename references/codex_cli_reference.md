@@ -270,6 +270,8 @@ Profile 適合個人預設；公開 skill 不應擅自建立或覆寫使用者�
 
 ## 安全與隔離
 
+Windows 的 helper 文字交換固定 UTF-8，輸出檔沿用 Windows 目錄存取權限。單次審查鎖使用 `msvcrt.locking`；Codex 啟動前必須成功加入 Job Object，再放行等待中的啟動器。取消／逾時終止作業物件內的子程序，主代理意外結束則由 `KILL_ON_JOB_CLOSE` 清理。這些控制不取代 Codex 唯讀沙箱；本次 Windows 原生測試已加入 CI，但尚未取得實機通過證據。
+
 Bounded 啟動前驗證必要功能停用能力，另傳入 `--disable shell_tool` 及 `-c 'web_search="disabled"'`。JSONL 僅接受已知訊息、推理、狀態及錯誤事件；`file_change` 與未知事件不得判定通過。事後偵測不等於所有副作用都能在執行前攔截。輸入／輸出路徑衝突時不得寫任何輸出；取消後先回收子程序再釋放鎖。
 
 - Reviewer 固定 `read-only`，只產生意見，不套 patch。
@@ -344,6 +346,8 @@ codex update --help
 - [Code Review](https://learn.chatgpt.com/docs/code-review)
 - [Standalone installer for macOS/Linux](https://chatgpt.com/codex/install.sh)
 - [Standalone installer for Windows](https://chatgpt.com/codex/install.ps1)
+- [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+- [Python Windows 檔案鎖](https://docs.python.org/3/library/msvcrt.html#msvcrt.locking)
 - [GPT-6 Astra migration guidance](https://developers.openai.com/api/docs/guides/latest-model)
 - [0.153.3 release](https://github.com/openai/codex/releases/tag/rust-v0.153.3)
 - [0.144.1 install-source-aware update action](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/tui/src/update_action.rs)

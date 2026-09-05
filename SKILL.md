@@ -132,6 +132,8 @@ Bounded 啟動前另確認 CLI 能停用命令工具與設定搜尋停用；檔�
 
 自訂 `--schema` 需在使用者選定的 Python 環境安裝 `requirements-schema.txt`；不得在執行中自動安裝。缺套件、規則無效或外部參照都要在模型啟動前失敗；回覆需通過本機格式驗證。內建 schema 保持零額外依賴。輸出路徑與輸入衝突時不得寫入任何結果檔。
 
+Windows 使用 UTF-8、原生檔案鎖與 Job Object 程序管理；納管失敗不得繞過控制重試。Windows 檔案沿用目錄存取權限，不以 `chmod` 宣稱私人權限。Ctrl+Break 視為取消；強制結束時不保證有結果檔。Windows 驗證狀態與無模型測試方式見 [README](README.md#windows-執行相容性)，macOS 測試不代表 Windows 實機通過。
+
 `--ignore-user-config` 只忽略 base user config，仍保留 project rules；`--isolated` 則等同 `--ignore-user-config --ignore-rules`，兩者都不保證停用 skill discovery。Bounded mode固定使用 `--ignore-user-config` 並拒絕 `--isolated`。
 
 `--max-tool-calls` 與 `--max-jsonl-bytes` 對既有模式預設 unlimited；bounded 固定零工具並預設最多 262144 JSONL bytes。Policy violation、timeout 或缺少終態都不得視為 final success。Scope 不變時禁止只替換 mode／preset／隔離旗標重試 timeout；先縮小 packet 或由 caller 明確決定下一步。

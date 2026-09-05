@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import queue
@@ -16,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from .compat import restrict_file_permissions
 from .catalog import CodexBinary
 from .result import ReviewResult
 
@@ -49,8 +51,13 @@ BOUNDED_SAFE_ITEMS = frozenset({"agent_message", "reasoning", "error"})
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - Windows best effort
+except ImportError:  # Windows
     fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 
 def sanitize_command(cmd: Sequence[str], sensitive_values: Iterable[str] = ()) -> str:
@@ -369,11 +376,13 @@ class CodexProcessRunner:
         last_activity_at = started_at
         last_heartbeat = started_at
         process: Optional[subprocess.Popen[str]] = None
+        windows_job = None
         timed_out = False
         timeout_reason: Optional[str] = None
         timeout_silence_duration_ms: Optional[int] = None
         stdin_thread: Optional[threading.Thread] = None
         stdin_errors: List[str] = []
+        stream_errors: List[str] = []
         lock_descriptors: List[int] = []
         runtime_warnings = list(warnings or [])
         policy_violation: Optional[Dict[str, object]] = None
@@ -393,13 +402,15 @@ class CodexProcessRunner:
             try:
                 for line in iter(stream.readline, ""):
                     event_queue.put((stream_name, line, time.monotonic()))
+            except (OSError, UnicodeError):
+                stream_errors.append(f"Could not read Codex {stream_name} as UTF-8")
             finally:
                 stream.close()
 
         def write_stdin(stream, payload: str) -> None:
             try:
                 stream.write(payload)
-            except (BrokenPipeError, OSError) as exc:
+            except (OSError, UnicodeError) as exc:
                 stdin_errors.append(str(exc))
             finally:
                 try:
@@ -450,7 +461,10 @@ class CodexProcessRunner:
 
         try:
             if threading.current_thread() is threading.main_thread():
-                for signum in (signal.SIGINT, signal.SIGTERM):
+                signals = [signal.SIGINT, signal.SIGTERM]
+                if os.name == "nt":
+                    signals.append(signal.SIGBREAK)
+                for signum in signals:
                     previous_handlers[signum] = signal.getsignal(signum)
                     signal.signal(signum, interrupt)
             requested_lock_keys = list(lock_keys or [])
@@ -502,18 +516,28 @@ class CodexProcessRunner:
                 last_message_initialized = True
 
             print(f"[codex-review] starting: {sanitized}", file=sys.stderr, flush=True)
+            launch_cmd = list(cmd)
+            launch_payload = stdin_payload
+            if os.name == "nt":
+                from .windows_job import WindowsJob, launcher_command
+                windows_job = WindowsJob()
+                launch_cmd = launcher_command(cmd)
+                launch_payload = "\0" + (stdin_payload or "")
             process = subprocess.Popen(
-                list(cmd),
+                launch_cmd,
                 stdin=subprocess.PIPE
-                if stdin_payload is not None
+                if launch_payload is not None
                 else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=True, encoding="utf-8",
                 bufsize=1,
                 env=self.env,
                 start_new_session=(os.name != "nt"),
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             )
+            if windows_job is not None:
+                windows_job.assign(process.pid)
             if process.stdout is None or process.stderr is None:
                 raise RuntimeError("failed to capture Codex stdout/stderr")
 
@@ -525,10 +549,10 @@ class CodexProcessRunner:
             )
             stdout_thread.start()
             stderr_thread.start()
-            if stdin_payload is not None and process.stdin is not None:
+            if launch_payload is not None and process.stdin is not None:
                 stdin_thread = threading.Thread(
                     target=write_stdin,
-                    args=(process.stdin, stdin_payload),
+                    args=(process.stdin, launch_payload),
                     daemon=True,
                 )
                 stdin_thread.start()
@@ -538,10 +562,13 @@ class CodexProcessRunner:
                     stream_name, line, activity_at = event_queue.get(timeout=0.2)
                     consume(stream_name, line, activity_at)
                     if policy_violation is not None:
-                        self._terminate_process_group(process)
+                        self._terminate_process_group(process, windows_job)
                         break
                 except queue.Empty:
                     pass
+
+                if stream_errors:
+                    raise RuntimeError(stream_errors[0])
 
                 now = time.monotonic()
                 if (
@@ -564,7 +591,7 @@ class CodexProcessRunner:
                     timeout_silence_duration_ms = max(
                         0, int((now - last_activity_at) * 1000)
                     )
-                    self._terminate_process_group(process)
+                    self._terminate_process_group(process, windows_job)
                     break
                 if self.idle_timeout and now - last_activity_at > self.idle_timeout:
                     timed_out = True
@@ -572,7 +599,7 @@ class CodexProcessRunner:
                     timeout_silence_duration_ms = max(
                         0, int((now - last_activity_at) * 1000)
                     )
-                    self._terminate_process_group(process)
+                    self._terminate_process_group(process, windows_job)
                     break
 
             stdout_thread.join(timeout=2)
@@ -584,6 +611,9 @@ class CodexProcessRunner:
                 consume(stream_name, line, activity_at)
             if process.poll() is None:
                 process.wait(timeout=2)
+
+            if stream_errors:
+                raise RuntimeError(stream_errors[0])
 
             output = "".join(stdout_lines)
             stderr = self._summarize_stderr(
@@ -735,6 +765,8 @@ class CodexProcessRunner:
         except (_ReviewInterrupted, KeyboardInterrupt) as exc:
             interrupted = True
             signum = exc.signum if isinstance(exc, _ReviewInterrupted) else signal.SIGINT
+            if signum == getattr(signal, "SIGBREAK", None):
+                signum = signal.SIGINT
             return ReviewResult(
                 success=False,
                 mode=mode,
@@ -797,9 +829,11 @@ class CodexProcessRunner:
                 for signum in previous_handlers:
                     signal.signal(signum, signal.SIG_IGN)
                 if process is not None and (
-                    interrupted or policy_violation is not None or process.poll() is None
+                    windows_job is not None or interrupted or policy_violation is not None or process.poll() is None
                 ):
-                    self._terminate_process_group(process)
+                    self._terminate_process_group(process, windows_job)
+                if windows_job is not None:
+                    windows_job.close()
                 for worker in (stdout_thread, stderr_thread, stdin_thread):
                     if worker is not None:
                         worker.join(timeout=2)
@@ -807,6 +841,8 @@ class CodexProcessRunner:
                     self._write_private(last_message_path, "")
             finally:
                 try:
+                    if windows_job is not None:
+                        windows_job.close()
                     if output_handle:
                         output_handle.close()
                     for descriptor in reversed(lock_descriptors):
@@ -846,8 +882,10 @@ class CodexProcessRunner:
 
     @staticmethod
     def _acquire_execution_lock(lock_key: str) -> Tuple[Optional[int], Optional[str]]:
-        if fcntl is None:
-            return None, None
+        if fcntl is None and msvcrt is None:
+            raise RuntimeError("No supported reviewer execution lock is available")
+        if os.name == "nt":
+            lock_key = os.path.normcase(lock_key)
         digest = hashlib.sha256(lock_key.encode("utf-8")).hexdigest()
         lock_directory = Path(tempfile.gettempdir()) / "codex-reviewer-locks"
         lock_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -856,17 +894,25 @@ class CodexProcessRunner:
         except OSError:
             pass
         lock_path = lock_directory / f"{digest}.lock"
-        flags = os.O_RDWR | os.O_CREAT
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         descriptor = os.open(lock_path, flags, 0o600)
         try:
-            os.fchmod(descriptor, 0o600)
+            restrict_file_permissions(descriptor)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                owner = os.read(descriptor, 64).decode("ascii", errors="ignore").strip()
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                owner = ""
+                if fcntl is not None:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    owner = os.read(descriptor, 64).decode("ascii", errors="ignore").strip()
                 owner_detail = f" (owner PID {owner})" if owner.isdigit() else ""
                 os.close(descriptor)
                 return None, (
@@ -874,7 +920,11 @@ class CodexProcessRunner:
                     f"and scope{owner_detail}; wait for it to finish or terminate "
                     "it before retrying"
                 )
-            os.ftruncate(descriptor, 0)
+            # Keep the locked byte in place on Windows; do not truncate a live region.
+            if fcntl is not None:
+                os.ftruncate(descriptor, 0)
+            else:
+                os.lseek(descriptor, 1, os.SEEK_SET)
             os.write(descriptor, str(os.getpid()).encode("ascii"))
             os.fsync(descriptor)
             return descriptor, None
@@ -889,11 +939,14 @@ class CodexProcessRunner:
         try:
             if fcntl is not None:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
         finally:
             os.close(descriptor)
 
     @staticmethod
-    def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    def _terminate_process_group(process: subprocess.Popen[str], windows_job=None) -> None:
         if os.name != "nt":
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -919,15 +972,17 @@ class CodexProcessRunner:
                 pass
             return
 
-        try:
-            process.terminate()
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        if windows_job is not None:
             try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+                process.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
                 pass
+            windows_job.terminate()
+        # Assignment failure leaves only the waiting launcher, which must also be reaped.
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
 
     @staticmethod
     def _error_detail(
@@ -1015,7 +1070,7 @@ class CodexProcessRunner:
             flags |= os.O_NOFOLLOW
         descriptor = os.open(path, flags, 0o600)
         try:
-            os.fchmod(descriptor, 0o600)
+            restrict_file_permissions(descriptor)
             return os.fdopen(descriptor, "w", encoding="utf-8")
         except Exception:
             os.close(descriptor)

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterator, List, Optional, Sequence, Tuple
 
+from .compat import restrict_file_permissions
 from .catalog import (
     CODEX_BIN_ENV,
     INSTALL_NPM,
@@ -127,8 +128,7 @@ def _write_cache(
             prefix=".update-check.", suffix=".tmp", dir=path.parent
         )
         try:
-            if hasattr(os, "fchmod"):
-                os.fchmod(descriptor, 0o600)
+            restrict_file_permissions(descriptor)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 descriptor = -1
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -216,7 +216,7 @@ def _run_update(
     return subprocess.run(
         list(command),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         timeout=timeout,
         check=False,
     )
@@ -319,7 +319,7 @@ def prepare_codex_binary(
 
         try:
             result = _run_update(command, timeout=timeout)
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
             result = None
             first_error = str(exc)
         else:
@@ -343,7 +343,7 @@ def prepare_codex_binary(
                 outcome.command = fallback[1]
                 try:
                     result = _run_update(fallback[0], timeout=timeout)
-                except (OSError, subprocess.SubprocessError) as exc:
+                except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
                     result = None
                     first_error = f"{first_error}; fallback failed: {exc}"
                 else:

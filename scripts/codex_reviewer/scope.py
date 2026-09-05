@@ -194,7 +194,7 @@ def resolve_developer_git_details(
             result = subprocess.run(
                 ["xcrun", "--find", "git"],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=timeout,
                 check=False,
             )
@@ -208,7 +208,7 @@ def resolve_developer_git_details(
                 if resolved != "/usr/bin/git":
                     return resolved, None
                 xcrun_warning = "xcrun resolved only the /usr/bin/git shim; sandboxed Git may require temporary writes"
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, UnicodeError, subprocess.SubprocessError):
             xcrun_warning = "xcrun could not resolve the developer Git binary"
 
     for candidate in (
@@ -460,6 +460,7 @@ class GitInspector:
             [self.git_path, "-C", self.cwd, *args],
             capture_output=True,
             text=text,
+            encoding="utf-8" if text else None,
             timeout=self.timeout,
             check=False,
             env=developer_git_environment(self.git_path),

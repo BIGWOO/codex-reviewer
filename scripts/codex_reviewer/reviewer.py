@@ -887,9 +887,9 @@ class CodexReviewer:
         command.extend(["features", "list"])
         try:
             result = subprocess.run(
-                command, capture_output=True, text=True, timeout=10, check=False
+                command, capture_output=True, text=True, encoding="utf-8", timeout=10, check=False
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, UnicodeError, subprocess.SubprocessError):
             return "Could not verify required bounded-review tool controls"
         states = {}
         for line in result.stdout.splitlines():
@@ -1081,7 +1081,7 @@ def run_doctor(
             result = subprocess.run(
                 doctor_cmd,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=30,
                 check=False,
             )
@@ -1142,7 +1142,7 @@ def run_doctor(
             else:
                 detail = result.stdout.strip() or result.stderr.strip() or {}
                 add("auth_config", "fail", detail or "Unparseable codex doctor output")
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
             add("auth_config", "fail", str(exc))
 
         catalog, catalog_warnings = load_catalog(binary)
@@ -1188,7 +1188,7 @@ def run_doctor(
         version_result = subprocess.run(
             [inspector.git_path, "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=15,
             check=False,
             env=developer_git_environment(inspector.git_path),
@@ -1207,7 +1207,7 @@ def run_doctor(
             init_result = subprocess.run(
                 [inspector.git_path, "-C", sandbox_root, "init", "-q"],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=15,
                 check=False,
                 env=developer_git_environment(inspector.git_path),
@@ -1247,7 +1247,7 @@ def run_doctor(
                 result = subprocess.run(
                     command,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8",
                     timeout=30,
                     check=False,
                     env=env,
@@ -1259,7 +1259,7 @@ def run_doctor(
                         "stderr": result.stderr.strip(),
                     }
                 )
-            except (OSError, subprocess.SubprocessError) as exc:
+            except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
                 sandbox_results.append(
                     {
                         "command": "git " + " ".join(git_args),

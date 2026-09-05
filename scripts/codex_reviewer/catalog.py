@@ -187,11 +187,11 @@ class CodexBinary:
             result = subprocess.run(
                 [npm, "prefix", "-g"],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=timeout,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, UnicodeError, subprocess.SubprocessError):
             return []
         if result.returncode != 0 or not result.stdout.strip():
             return []
@@ -260,11 +260,11 @@ class CodexBinary:
             result = subprocess.run(
                 [path, "--version"],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=timeout,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
             return cls(
                 requested=requested,
                 path=path,
@@ -426,11 +426,11 @@ class ModelCatalog:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=timeout,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
             return cls(
                 error=f"Failed to load Codex model catalog: {exc}",
                 source="bundled" if bundled else "remote",
