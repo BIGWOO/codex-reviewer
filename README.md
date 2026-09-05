@@ -27,6 +27,7 @@ git clone https://github.com/BIGWOO/codex-reviewer.git \
 ```bash
 SKILL_DIR="$HOME/.agents/skills/codex-reviewer"
 python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
+  --no-update-check \
   --result-json /tmp/codex-review-doctor.json
 ```
 
@@ -54,6 +55,7 @@ codex exec review --help
 
 ```bash
 python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
+  --no-update-check \
   --codex-bin /absolute/path/to/codex \
   --result-json /tmp/codex-review-doctor.json
 ```
@@ -64,7 +66,7 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 export CODEX_REVIEWER_CODEX_BIN=/absolute/path/to/codex
 ```
 
-`doctor` 不呼叫模型；它檢查 binary version、model catalog、Git 與 reviewer 所需能力。遇到 config 問題時再加 `--strict-config`。
+`doctor` 不呼叫模型；它檢查 binary version、model catalog、Git 與 reviewer 所需能力。遇到 config 問題時再加 `--strict-config`。單獨 `doctor` 或 `--dry-run` 仍可能更新 CLI；純診斷應搭配 `--no-update-check`。
 
 更新控制：
 
@@ -121,7 +123,7 @@ python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
   --cd /path/to/repo \
   --uncommitted \
   --preset quick \
-  --dry-run
+  --dry-run --no-update-check
 ```
 
 ## 與 Codex 子代理的差異
@@ -147,18 +149,20 @@ python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
 | `security` / `performance` / `architecture` / `quality` | Generic 專項 review |
 | `doctor` | Binary、version、catalog 或 Git diagnostic |
 
-Native review 在 Codex CLI 0.144.1 不會套用 output schema、images 或 live search，也不使用 Ultra subagents。Helper 會對不相容組合 fail fast；需要這些能力時使用 generic mode。
+依 0.153.3 原始碼核對，Native review 不會套用 output schema、images 或 live search，也不使用 Ultra subagents。Helper 會對不相容組合 fail fast；需要這些能力時使用 generic mode。
 
 ## Presets
 
 | Preset | Primary | Fallback | Typical use |
 |---|---|---|---|
-| `quick` | GPT-5.6 Sol medium | GPT-5.5 medium | 快速找阻塞問題 |
-| `standard` | GPT-5.6 Sol high | GPT-5.5 high | 預設日常 review |
-| `deep` | GPT-5.6 Sol xhigh | GPT-5.5 xhigh | 複雜、高價值變更 |
-| `ultra` | GPT-5.6 Sol ultra | 無 | Generic、可平行拆解的明確 opt-in |
+| `quick` | GPT-6 Astra medium | Sol → GPT-5.5 medium | 快速找阻塞問題 |
+| `standard` | GPT-6 Astra high | Sol → GPT-5.5 high | 預設日常 review |
+| `deep` | GPT-6 Astra xhigh | Sol → GPT-5.5 xhigh | 複雜、高價值變更 |
+| `ultra` | GPT-6 Astra ultra | 無 | Generic、可平行拆解的明確 opt-in |
 
-Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設帳號已開放 GPT-5.6。`--quick` 是 `--preset quick` 的 alias。
+Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設帳號已開放 Astra。`--quick` 是 `--preset quick` 的 alias。
+
+自動選用 Astra 失敗時，一般等級依序備援並警告；明確 `--model` 不會換模型。Catalog 完全不可取得時，一般等級保留 GPT-5.5 保守備援。內建審查同步指定 `review_model`，避免使用者或 profile 設定蓋過選定模型。
 
 `max` 不屬於 preset。只有明確傳入 `--reasoning-effort max` 才會使用，且必須是完整 sizing 的單一 repo scope，最多 15 個 changed files／1200 changed lines，不能用 `--allow-large-diff` 繞過。
 
@@ -258,12 +262,38 @@ Structured review 預設使用 [references/review_output_schema.json](references
 - Quick 只做 triage，不代表 quality gate 完成；窄 tracer 先跑 bounded `standard`，證據不足時才明確升級 `deep`。
 - P0–P2 為 `blocked`；僅 P3 為 `passed_with_warnings`。P2 必須修正，或記錄理由後針對該範圍重跑 reviewer。
 
+
+## 自訂格式與驗證依賴
+
+只有自訂 `--schema` 需要 `jsonschema==4.26.0`；一般及內建格式審查仍不需要額外套件。請使用獨立環境安裝，不修改系統 Python：
+
+```bash
+python3 -m venv "$HOME/.venvs/codex-reviewer"
+"$HOME/.venvs/codex-reviewer/bin/python" -m pip install -r "$SKILL_DIR/requirements-schema.txt"
+"$HOME/.venvs/codex-reviewer/bin/python" "$SKILL_DIR/scripts/codex_review.py" custom \
+  --no-update-check --schema /absolute/path/schema.json "Review the specified scope"
+```
+
+啟動前確認套件與規則有效，完成後再驗證回覆。未指定 `$schema` 時採 Draft 2020-12；已知版本依宣告驗證，未知版本拒絕。參照只能指向同一份文件，不讀取網路或外部檔案；`format` 保持註記語意，不額外檢查 Email 等格式。格式不符會回報欄位位置，`success=false`；格式通過並不代表品質閘門通過。使用者提供的 schema 若剛好與內建 schema 相同，仍按自訂 schema 處理。
+
+## 本次相容性與保護措施
+
+- 0.153.3：已核對官方原始碼與版本說明；0.153.2：本機參數、模型清單及停用功能檢查。另已用 Astra standard 執行限定範圍審查與針對性複查；最低 stable CLI 仍是 0.144.1，其他模式及 0.153.3 的真實執行尚未驗證。
+- 輸出路徑與範圍、格式、證據或圖片輸入衝突時，退出且不寫入任何輸出；包含符號連結及硬連結別名。
+- 限定範圍的 Git 差異按檔名字面比對，`[id].tsx` 不會展開成其他檔名。
+- 限定範圍模式額外停用命令工具與搜尋，必要停用功能無法確認時提前失敗。檔案修改及未知輸出事件都會阻止通過；事件偵測不代表副作用發生前的完整攔截。
+- Ctrl+C／SIGTERM 先清除子程序再釋放鎖，`execution_status=interrupted`、`success=false`、品質無法確認；退出碼分別為 130／143。程序群組回收在 POSIX 平台驗證，Windows 不宣稱等同保障。
+
+本機驗證使用模擬 CLI 與暫存 Git 專案。完整測試可在上述虛擬環境執行 `python -m unittest discover -s tests -v`；自訂格式測試需要先安裝選填依賴。
+
+2026-09-05 首輪真實審查涵蓋 18 個檔案，約 110 秒完成，發現一個已在本機重現的格式參照問題。修正後只複查格式驗證程式與測試，約 41 秒完成且無發現；原 120 項完整測試之外，另通過新增案例後的 6 項格式驗證測試。這些是單次執行證據，不代表 Astra 審查品質、典型耗時或用量的基準測試。
+
 ## Files
 
 - `SKILL.md`：agent workflow、trigger 與 quality gate
 - `scripts/codex_review.py`：CLI wrapper
 - `scripts/codex_reviewer/updates.py`：npm 優先、standalone bootstrap 與 update cache
-- `references/codex_cli_reference.md`：0.144.1 capability matrix、V2 profile 與診斷
+- `references/codex_cli_reference.md`：0.153.3 原始碼能力核對、V2 profile 與診斷
 - `references/example_prompts.md`：parameterized generic prompts
 - `references/review_output_schema.json`：v2 native-compatible schema
 - `agents/openai.yaml`：Codex UI metadata

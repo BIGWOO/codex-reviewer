@@ -1,6 +1,8 @@
 # Codex CLI Reviewer v2 參考
 
-本文件以 `codex-cli 0.144.1` 為基準，整理 reviewer 所需的模型、命令與已知邊界。執行前仍要以本機 `codex --version`、`codex exec review --help` 與 `codex debug models` 為準。
+本文件以 `codex-cli 0.153.3` 官方原始碼核對為基準，整理 reviewer 所需的模型、命令與已知邊界。執行前仍要以本機 `codex --version`、`codex exec review --help` 與 `codex debug models` 為準。
+
+本機 0.153.2 已檢查 help、模型清單及功能停用參數；2026-09-05 另以 Astra standard 完成限定範圍審查，發現的格式參照問題已修正並通過針對性複查。此證據僅涵蓋 bounded 模式，未驗證新版 native 與其他模式。最低版本仍為 0.144.1，程式保留保守的版本提示，不把單一模式的執行或原始碼核對視為全面驗收。
 
 ## 目錄
 
@@ -25,8 +27,8 @@
 | Codex 內建 bug rubric 與 P0-P3 findings | 是 | 需自行提供 | Native |
 | 自訂審查 criteria 或檔案集合 | scope 不能再帶 custom prompt | 是 | Generic |
 | 任意 commit range | 無原生 range flag | 是 | Generic |
-| `--output-schema` 強制 final JSON | 0.144.1 會接受但忽略 | 是 | Generic |
-| 圖片輸入 | 0.144.1 會接受但忽略 | 是 | Generic |
+| `--output-schema` 強制 final JSON | 0.153.3 原始碼仍忽略 | 是 | Generic |
+| 圖片輸入 | 0.153.3 原始碼仍忽略 | 是 | Generic |
 | Live web search | reviewer child 強制停用 | 是 | Generic |
 | Ultra / subagents | reviewer child 關閉 collaboration | 可依模型能力使用 | Generic only |
 | JSONL 進度與 usage | 是 | 是 | 兩者皆可 |
@@ -80,18 +82,19 @@ codex debug models | jq '.models[] | {
 }'
 ```
 
-`codex-cli 0.144.1` 的 catalog：
+2026-09-05 本機 `codex-cli 0.153.2` 查得的遠端 catalog（依帳號與當次回應為準）：
 
 | Model | Reviewer 定位 | Reasoning | CLI context |
 |---|---|---|---:|
-| `gpt-5.6-sol` | 複雜、高價值 review | `low` 到 `max`，另有 `ultra` | 372,000 |
-| `gpt-5.5` | 5.6 不可用時 fallback | `low` 到 `xhigh` | 依 catalog |
+| `gpt-6-astra` | 預設 review | `low` 到 `max`，另有 `ultra` | 預設 272,000，最大 872,000 |
+| `gpt-5.6-sol` | 第一備援 | 同上 | 預設 272,000，最大 872,000 |
+| `gpt-5.5` | Astra／Sol 不可用時 fallback | `low` 到 `xhigh` | 依 catalog |
 
 Reviewer 建議：
 
-- Quick：`gpt-5.6-sol` + `medium`。
-- Standard：`gpt-5.6-sol` + `high`。
-- Deep：`gpt-5.6-sol` + `xhigh`。
+- Quick：`gpt-6-astra` + `medium`。
+- Standard：`gpt-6-astra` + `high`。
+- Deep：`gpt-6-astra` + `xhigh`。
 - Ultra：只在 generic review、明確可平行拆解且使用者接受額外 usage 時啟用。
 
 `max` 不綁定 preset。Helper 只允許明確指定的 `max` 用於完整 sizing 的單一 repo scope，最多 15 個 changed files／1200 changed lines，且禁止 `--allow-large-diff`。
@@ -110,9 +113,10 @@ Reviewer 建議：
 
 ```bash
 codex --ask-for-approval never \
-  --model gpt-5.6-sol \
+  --model gpt-6-astra \
   --sandbox read-only \
   -c 'model_reasoning_effort="high"' \
+  -c 'review_model="gpt-6-astra"' \
   exec review \
   --ephemeral \
   --json \
@@ -132,7 +136,7 @@ Native scope 必須四選一：
 
 ```bash
 codex --ask-for-approval never \
-  --model gpt-5.6-sol \
+  --model gpt-6-astra \
   --sandbox read-only \
   -c 'model_reasoning_effort="high"' \
   exec \
@@ -176,9 +180,9 @@ Search 與圖片都不得用來繞過 scope；只有當 review 真正需要現�
 
 ## Native review 邊界
 
-`codex-cli 0.144.1` 的 native reviewer 會建立 child review session，套用內建 rubric、強制 `approval_policy=never`，並關閉 web search、Collab 與 MultiAgentV2。
+依 `codex-cli 0.153.3` 原始碼，native reviewer 會建立 child review session，套用內建 rubric、強制 `approval_policy=never`，並關閉 web search、Collab 與 MultiAgentV2。
 
-CLI help 會在 `codex exec review` 顯示 `--output-schema`，exec parser 也會接受 image flag；但 0.144.1 的 Review branch 不載入 `output_schema_path`，也不把 images 組進 review input。文件與 wrapper 應以實作行為為準，而不是只看 parser 是否接受。
+CLI help 會在 `codex exec review` 顯示 `--output-schema`，exec parser 也會接受 image flag；但 0.153.3 的 Review branch 不載入 `output_schema_path`，也不把 images 組進 review input。文件與 wrapper 應以實作行為為準，而不是只看 parser 是否接受。
 
 內部 reviewer 會產生 `ReviewOutputEvent`，但 exec JSONL 的簡化 mapper 不暴露 `ExitedReviewMode.review_output`。CLI 使用者拿到的是渲染後的 agent message，不是 raw native struct。
 
@@ -186,7 +190,9 @@ CLI help 會在 `codex exec review` 顯示 `--output-schema`，exec parser 也�
 
 - Native review 不要宣稱支援 schema、image、search 或 Ultra。
 - 需要上述能力時切換 generic review。
-- Native deep review 使用 Sol + `xhigh`；不要用 Ultra。`max` 只供明確指定的窄 scope。
+- Native deep review 使用 Astra + `xhigh`；不要用 Ultra。`max` 只供明確指定的窄 scope。
+
+Native child 優先讀取 `review_model`；helper 會明確覆寫為本次選定模型，不只設定外層 `--model`。
 
 ## JSONL 與 structured output
 
@@ -222,7 +228,9 @@ CLI help 會在 `codex exec review` 顯示 `--output-schema`，exec parser 也�
 
 Helper 的 `--result-json <FILE>` 另外寫入精簡的 v2 execution envelope，不取代 stdout final message。`success` 保留執行完成語意；`execution_status`、`review_verdict`、`gate_status` 分開記錄 process、structured verdict 與 delivery gate。Envelope 另包含 duration、`terminal_event`、最後解析的 `last_event`、timeout 當下的 `silence_duration_ms`、event counts、raw bytes、policy violation，以及 bounded scope／packet／prompt hashes。Raw JSONL 只由 `--output` 保存；只有明確使用 `--include-events` 才會在 envelope 加入已遮蔽 events。Timeout 或 policy violation 的 `partial_progress` 永遠是未驗證進度，不是 final result。
 
-`--enforce-gate` 的 exit contract：`passed`／`passed_with_warnings` 為 0、`blocked` 為 2、執行失敗／`inconclusive`／`not_evaluated` 為 1。P0–P2 都會 block；只有 P3 是 warning。
+`--enforce-gate` 的 exit contract：`passed`／`passed_with_warnings` 為 0、`blocked` 為 2、執行失敗／`inconclusive`／`not_evaluated` 為 1。P0–P2 都會 block；只有 P3 是 warning。取消例外：Ctrl+C 為 130、SIGTERM 為 143，結果為 `interrupted`／`inconclusive`。
+
+自訂 `--schema` 需選填 `requirements-schema.txt`，以本機 jsonschema 驗證規則及結果；內建格式維持既有零依賴驗證。缺套件、未知格式版本及外部參照在推理前失敗，格式錯誤只回報欄位位置。安裝方式見 README。
 
 ## V2 profile
 
@@ -235,7 +243,7 @@ $CODEX_HOME/reviewer.config.toml
 不是舊式 `[profiles.reviewer]` table。範例：
 
 ```toml
-model = "gpt-5.6-sol"
+model = "gpt-6-astra"
 model_reasoning_effort = "high"
 model_verbosity = "low"
 sandbox_mode = "read-only"
@@ -261,6 +269,8 @@ codex --profile reviewer exec "Review the current changes"
 Profile 適合個人預設；公開 skill 不應擅自建立或覆寫使用者的 `$CODEX_HOME/*.config.toml`。
 
 ## 安全與隔離
+
+Bounded 啟動前驗證必要功能停用能力，另傳入 `--disable shell_tool` 及 `-c 'web_search="disabled"'`。JSONL 僅接受已知訊息、推理、狀態及錯誤事件；`file_change` 與未知事件不得判定通過。事後偵測不等於所有副作用都能在執行前攔截。輸入／輸出路徑衝突時不得寫任何輸出；取消後先回收子程序再釋放鎖。
 
 - Reviewer 固定 `read-only`，只產生意見，不套 patch。
 - Non-interactive review 明確傳入 `--ask-for-approval never`，避免無人值守時卡在 prompt。
@@ -303,6 +313,8 @@ Generic 跨 repo review 使用 version 1 scope manifest：
 
 `--max-tool-calls` 與 `--max-jsonl-bytes` 對既有模式預設 unlimited。Bounded 固定 max tools 0，JSONL 預設 262144 bytes；超限時 helper 立即終止 process group、保存 raw/partial evidence，且永遠不產生成功 final。Timeout 後不得在 scope 不變時只替換 mode、preset、`--ignore-user-config` 或 `--isolated` 重試。
 
+Helper 的 `doctor` 與 `--dry-run` 若沒有明確 pin 或 `--no-update-check`，仍可能先更新 CLI；純診斷時要明確停用更新。
+
 ## 診斷
 
 ```bash
@@ -332,8 +344,9 @@ codex update --help
 - [Code Review](https://learn.chatgpt.com/docs/code-review)
 - [Standalone installer for macOS/Linux](https://chatgpt.com/codex/install.sh)
 - [Standalone installer for Windows](https://chatgpt.com/codex/install.ps1)
-- [GPT-5.6 Sol model](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- [GPT-6 Astra migration guidance](https://developers.openai.com/api/docs/guides/latest-model)
+- [0.153.3 release](https://github.com/openai/codex/releases/tag/rust-v0.153.3)
 - [0.144.1 install-source-aware update action](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/tui/src/update_action.rs)
-- [0.144.1 review task source](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/core/src/tasks/review.rs)
-- [0.144.1 exec routing source](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/exec/src/lib.rs)
+- [0.153.3 review task source](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/core/src/tasks/review.rs)
+- [0.153.3 exec routing source](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/exec/src/lib.rs)
 - [0.144.1 native rubric](https://github.com/openai/codex/blob/rust-v0.144.1/codex-rs/prompts/templates/review/rubric.md)

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Codex Reviewer v2 Output",
-  "description": "Structured code-review output compatible with Codex native review field names. Use with generic codex exec; Codex CLI 0.144.1 ignores --output-schema on exec review.",
+  "description": "Structured code-review output compatible with Codex native review field names. Use with generic codex exec; Codex CLI through 0.153.3 ignores --output-schema on exec review.",
   "type": "object",
   "additionalProperties": false,
   "required": [
