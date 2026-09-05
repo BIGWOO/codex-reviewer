@@ -40,7 +40,7 @@ from .updates import prepare_codex_binary
 from .schema import SchemaValidationError, load_validator, result_error
 
 
-DEFAULT_MODEL = "gpt-5.6-sol"
+DEFAULT_MODEL = "gpt-6-astra"
 DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_TIMEOUT = 300
 DEFAULT_IDLE_TIMEOUT = 180
@@ -52,6 +52,7 @@ MAX_EXPLICIT_FILES = 15
 MAX_EXPLICIT_LINES = 1200
 UNCOMMITTED_FILE_WARNING_THRESHOLD = 10
 VERIFIED_CODEX_VERSION = MIN_CODEX_VERSION
+SOURCE_REVIEWED_CODEX_VERSION = (0, 153, 3)
 BUNDLED_SCHEMA = (
     Path(__file__).resolve().parents[2] / "references" / "review_output_schema.json"
 )
@@ -288,7 +289,8 @@ class CodexReviewer:
             verified = format_version(VERIFIED_CODEX_VERSION)
             warning = (
                 f"Codex CLI {self.binary.version_text} is newer than verified {verified}; "
-                "using conservative v0.144.1 capability rules"
+                f"using capability restrictions source-reviewed through {format_version(SOURCE_REVIEWED_CODEX_VERSION)}; "
+                "newer CLI inference behavior has not been acceptance-tested"
             )
             if warning not in self._base_warnings:
                 self._base_warnings.append(warning)
@@ -363,12 +365,12 @@ class CodexReviewer:
                 )
             if self.schema_file:
                 return (
-                    "Native review cannot use --schema: Codex CLI 0.144.1 accepts the flag but "
+                    "Native review cannot use --schema: Codex CLI through 0.153.3 accepts the flag but "
                     "the review implementation ignores it; use structured-review or generic mode"
                 )
             if self.images:
                 return (
-                    "Native review cannot use --image: Codex CLI 0.144.1 accepts image input but "
+                    "Native review cannot use --image: Codex CLI through 0.153.3 accepts image input but "
                     "the review implementation ignores it; use generic mode"
                 )
             if self.search:

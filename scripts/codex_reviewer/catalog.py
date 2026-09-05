@@ -29,18 +29,21 @@ class PresetCandidate:
 
 PRESET_CANDIDATES: Mapping[str, Tuple[PresetCandidate, ...]] = {
     "quick": (
+        PresetCandidate("gpt-6-astra", "medium"),
         PresetCandidate("gpt-5.6-sol", "medium"),
         PresetCandidate("gpt-5.5", "medium"),
     ),
     "standard": (
+        PresetCandidate("gpt-6-astra", "high"),
         PresetCandidate("gpt-5.6-sol", "high"),
         PresetCandidate("gpt-5.5", "high"),
     ),
     "deep": (
+        PresetCandidate("gpt-6-astra", "xhigh"),
         PresetCandidate("gpt-5.6-sol", "xhigh"),
         PresetCandidate("gpt-5.5", "xhigh"),
     ),
-    "ultra": (PresetCandidate("gpt-5.6-sol", "ultra"),),
+    "ultra": (PresetCandidate("gpt-6-astra", "ultra"),),
 }
 
 
@@ -569,7 +572,7 @@ def resolve_model_selection(
 
     if preset == "ultra":
         raise PresetResolutionError(
-            "Preset ultra requires gpt-5.6-sol with ultra reasoning; no fallback is allowed"
+            "Preset ultra requires gpt-6-astra with ultra reasoning; no fallback is allowed"
         )
 
     if catalog.error:

@@ -597,7 +597,7 @@ class CliContractTests(unittest.TestCase):
                 str(binary),
                 "--skip-git-repo-check",
                 "--context-window",
-                "372001",
+                "872001",
                 "--dry-run",
                 "custom",
                 "review",
@@ -624,8 +624,8 @@ class CliContractTests(unittest.TestCase):
         self.assertFalse(any("auto_compact" in value for value in execution["argv"]))
         self.assertIn("deprecat", result.stderr.lower())
         self.assertNotEqual(invalid.returncode, 0)
-        self.assertIn("372000", invalid.stderr)
-        self.assertIn("model_context_window=372000", implicit_execution["argv"])
+        self.assertIn("872000", invalid.stderr)
+        self.assertIn("model_context_window=872000", implicit_execution["argv"])
 
     def test_catalog_failure_falls_back_only_for_automatic_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -808,7 +808,7 @@ class CliContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("title", result.stderr)
 
-    def test_quick_alias_resolves_sol_medium(self) -> None:
+    def test_quick_alias_resolves_astra_medium(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = make_fake_codex(root)
@@ -827,7 +827,7 @@ class CliContractTests(unittest.TestCase):
 
         execution = next(call for call in reversed(calls) if "exec" in call["argv"])
         argv = execution["argv"]
-        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5.6-sol")
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-6-astra")
         self.assertTrue(
             any('model_reasoning_effort="medium"' == value for value in argv)
         )

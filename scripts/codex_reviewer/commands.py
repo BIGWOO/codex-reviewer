@@ -97,6 +97,7 @@ class CommandBuilder:
         title: Optional[str] = None,
     ) -> CommandSpec:
         argv = self._root_args()
+        argv.extend(["--config", f"review_model={json.dumps(self.model)}"])
         argv.extend(["exec", "review"])
         argv.extend(scope.native_args())
         if title:

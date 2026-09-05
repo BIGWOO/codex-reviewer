@@ -42,6 +42,7 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn("read-only", argv)
         self.assertIn("never", argv)
         self.assertIn('model_reasoning_effort="high"', argv)
+        self.assertIn('review_model="gpt-5.6-sol"', argv)
         self.assertIn("--ephemeral", argv)
         self.assertEqual(argv[argv.index("exec") + 1], "review")
         self.assertEqual(argv[argv.index("--base") + 1], "main")
@@ -55,6 +56,14 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertEqual(spec.argv[-1], "-")
         self.assertNotIn(secret, spec.argv)
         self.assertNotIn(secret, spec.display_command)
+
+    def test_native_explicit_model_also_overrides_profile_review_model(self) -> None:
+        for model in ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.5"):
+            builder = CommandBuilder(binary=self.binary, model=model, effort="high", profile="reviewer")
+            native = builder.native(ReviewScope("base", "main"))
+            self.assertEqual(native.argv[native.argv.index("--model") + 1], model)
+            self.assertIn(f'review_model="{model}"', native.argv)
+            self.assertFalse(any(value.startswith("review_model=") for value in builder.generic("review").argv))
 
     def test_generic_supports_schema_images_search_and_stdin(self) -> None:
         schema = self.root / "schema.json"

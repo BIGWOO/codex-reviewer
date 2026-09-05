@@ -125,6 +125,9 @@ class CatalogAndPresetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = ModelCatalog(
             models={
+                "gpt-6-astra": model(
+                    "gpt-6-astra", ("low", "medium", "high", "xhigh", "max", "ultra"), fast=True,
+                ),
                 "gpt-5.6-sol": model(
                     "gpt-5.6-sol",
                     ("low", "medium", "high", "xhigh", "max", "ultra"),
@@ -139,10 +142,10 @@ class CatalogAndPresetTests(unittest.TestCase):
 
     def test_presets_choose_expected_model_and_effort(self) -> None:
         expected = {
-            "quick": ("gpt-5.6-sol", "medium"),
-            "standard": ("gpt-5.6-sol", "high"),
-            "deep": ("gpt-5.6-sol", "xhigh"),
-            "ultra": ("gpt-5.6-sol", "ultra"),
+            "quick": ("gpt-6-astra", "medium"),
+            "standard": ("gpt-6-astra", "high"),
+            "deep": ("gpt-6-astra", "xhigh"),
+            "ultra": ("gpt-6-astra", "ultra"),
         }
         for preset, pair in expected.items():
             with self.subTest(preset=preset):
@@ -179,6 +182,20 @@ class CatalogAndPresetTests(unittest.TestCase):
         selection = resolve_model_selection("standard", partial)
         self.assertEqual((selection.model, selection.effort), ("gpt-5.5", "high"))
         self.assertTrue(any("Skipping" in warning for warning in selection.warnings))
+
+    def test_astra_absence_falls_back_to_sol_only_for_automatic_presets(self) -> None:
+        catalog = ModelCatalog(models={k: v for k, v in self.catalog.models.items() if k != "gpt-6-astra"})
+        for preset in ("quick", "standard", "deep"):
+            selection = resolve_model_selection(preset, catalog)
+            self.assertEqual(selection.model, "gpt-5.6-sol")
+            self.assertTrue(selection.fallback_used)
+            self.assertTrue(selection.warnings)
+        with self.assertRaises(PresetResolutionError):
+            resolve_model_selection("ultra", catalog)
+        with self.assertRaises(PresetResolutionError):
+            resolve_model_selection("standard", catalog, explicit_model="gpt-6-astra")
+        with self.assertRaises(PresetResolutionError):
+            resolve_model_selection("standard", catalog, explicit_effort="high")
 
     def test_catalog_failure_uses_conservative_gpt_55_for_auto_preset(self) -> None:
         unavailable = ModelCatalog(

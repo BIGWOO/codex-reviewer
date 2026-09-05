@@ -14,6 +14,15 @@ import time
 DEFAULT_CATALOG = {
     "models": [
         {
+            "slug": "gpt-6-astra",
+            "supported_reasoning_levels": [
+                {"effort": effort} for effort in ("low", "medium", "high", "xhigh", "max", "ultra")
+            ],
+            "context_window": 272000,
+            "max_context_window": 872000,
+            "additional_speed_tiers": ["fast"],
+        },
+        {
             "slug": "gpt-5.6-sol",
             "supported_reasoning_levels": [
                 {"effort": effort}
