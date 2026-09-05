@@ -39,11 +39,15 @@
 
 每個 generic prompt 都應包含以下約束：
 
+Helper 已透過 `scripts/codex_reviewer/prompts.py` 自動加入共用審查重點，包含副作用、相容性、邊界、效能、安全、具體證據、嚴重程度排序與最小修法。使用 helper 時不必重複貼入；下列範本用於補充任務特定範圍或直接組合 raw CLI 提示。Bounded packet 也會攜帶共用重點，仍禁止工具與範圍擴張。
+
 ```text
 Act only as a reviewer. Do not edit files, apply patches, commit, push, or deploy.
 Review only the declared scope. Report pre-existing issues only when they directly change the risk of this patch, and label them as pre-existing.
 Return every discrete, actionable issue the author would likely fix. Ignore style-only preferences and speculative risks.
+Prioritize hidden side effects, backward compatibility, edge cases, performance and security. Report naming, testing or maintenance concerns only when they have concrete behavioral impact introduced by the change.
 For each finding, cite the smallest relevant file and line range, explain the triggering condition and impact, and state confidence.
+Sort findings by severity and recommend the smallest sufficient fix. Do not expand scope merely to complete this checklist.
 Validate claims against source code, tests, schemas, and repository instructions. If evidence is insufficient, record the limitation instead of guessing.
 ```
 

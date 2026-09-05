@@ -85,6 +85,10 @@ export CODEX_REVIEWER_AUTO_UPDATE=0
 
 ## Quick Start
 
+直接呼叫 skill 即會套用[預設審查重點](SKILL.md#預設審查重點)，不必再貼通用提示詞：副作用、相容性、邊界、效能及安全優先，命名／測試／維護問題須有具體影響，按嚴重程度排序並限制在本次範圍。主代理核實後依既有授權採最小修復。
+
+Skill 一般選 bounded 或 structured 模式；這些及其他 generic 模式會自動將重點傳入模型。明確選用以下 native 模式時，仍使用 Codex 內建規則，無法追加同一份自訂提示。
+
 標準 branch review，使用 native Codex rubric：
 
 ```bash

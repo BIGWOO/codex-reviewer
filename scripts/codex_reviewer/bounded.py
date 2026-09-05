@@ -10,6 +10,7 @@ import subprocess
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .scope import developer_git_environment, resolve_developer_git_details
+from .prompts import DEFAULT_REVIEW_CRITERIA
 
 
 BOUNDED_SCOPE_VERSION = 1
@@ -90,6 +91,7 @@ class _GitPacketBuilder:
                 "tool_policy": "none",
                 "test_policy": "Use caller_evidence only; do not run tests or inspect the repository.",
                 "finding_policy": "Report only discrete actionable defects introduced by this scope.",
+                "review_criteria": DEFAULT_REVIEW_CRITERIA,
                 "output_policy": "Return only JSON matching the supplied schema.",
             },
             "repository": {"absolute_path": str(self.root)},

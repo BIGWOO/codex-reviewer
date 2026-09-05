@@ -38,6 +38,7 @@ from .scope import (
 )
 from .updates import prepare_codex_binary
 from .schema import SchemaValidationError, load_validator, result_error
+from .prompts import DEFAULT_REVIEW_CRITERIA
 
 
 DEFAULT_MODEL = "gpt-6-astra"
@@ -817,6 +818,7 @@ class CodexReviewer:
             "Ignore style-only preferences and unrelated pre-existing issues. "
             "Return only JSON matching the supplied schema."
         )
+        prompt += f"\n\nDefault review criteria:\n{DEFAULT_REVIEW_CRITERIA}"
         if extra:
             prompt += f"\n\nAdditional review instructions:\n{extra}"
         spec = self._builder(schema_file=schema).generic(prompt)
@@ -916,7 +918,7 @@ class CodexReviewer:
             return self._failure(
                 "generic", scope_error or "Could not resolve review scope", scope
             )
-        full_prompt = prompt
+        full_prompt = f"{prompt}\n\nDefault review criteria:\n{DEFAULT_REVIEW_CRITERIA}"
         if self._manifest_scopes:
             declared = "\n".join(
                 f"- {entry.repo}: {entry.scope.prompt_instruction()}"

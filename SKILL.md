@@ -33,11 +33,20 @@ description: Use OpenAI Codex CLI as an independent, read-only second-opinion re
 ## Workflow
 
 1. 先讀 `git status --short --branch`、目標 diff、相關規格與 repo instructions，固定 base/head 或 commit scope。
-2. 選擇 native 或 generic mode；不要用 parser 接受旗標推論 native 真正支援能力。
+2. 一般呼叫預設用 bounded-review；完整 Git 差異不適合窄 packet 時用 structured-review，讓下列預設審查重點確實傳入模型。只有 caller 指定 native-review 或明確要求內建 rubric 時才選 native；它不能在 Git scope 之外附加自訂提示，不宣稱已注入同一份重點。
 3. 窄 tracer 優先使用 `bounded-review` + `standard`。只有 standard 已有終態但證據仍不足，才由 caller 明確升級同一窄 packet 為 `deep`；不要自動升級。
 4. 使用 helper 執行並等待同一個 process 完成。只有在診斷 helper/CLI contract 時才直接組 raw `codex` command；不得根據中途訊息另開一輪。
 5. 驗證每個 finding：必須有可重現條件、具體影響、最小檔案/行號證據，且確實落在本次 scope。
 6. 整合成 findings-first 回覆；分開標示已確認問題、分歧、限制與未執行的測試。不要原樣貼整份 reviewer transcript。
+
+## 預設審查重點
+
+使用者不必額外貼檢查清單。Bounded、structured 與其他 generic 模式會自動傳入共用審查重點：
+
+- 不只檢查語法與明顯錯誤；在宣告範圍內優先檢查隱藏副作用、相容性、邊界情況、效能及安全風險。
+- 命名誤導、測試不足與維護成本，只有連到本次變更新增的具體行為缺陷或可證明的誤用風險時才回報；略過純風格與推測性建議。
+- 每項問題附觸發條件、影響、最小檔案／行號證據及最小修法，按嚴重程度排序。證據不足就說明限制，不為填滿清單擴大範圍或反覆審查。
+- 主代理核實後自行判斷哪些需要修復、哪些不採納，必要時簡述理由；已授權實作時採最小修改，純審查不自動改檔。Reviewer 本身始終唯讀；提交、推送及部署仍依既有授權邊界。
 
 ## Mode Selection
 
