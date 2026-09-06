@@ -1067,7 +1067,10 @@ class CliContractTests(unittest.TestCase):
             )
             envelope = json.loads(result_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(execution["stdin"], secret)
+        # Preserve caller text while allowing the shared review criteria.
+        self.assertTrue(execution["stdin"].startswith(secret + "\n\n"))
+        self.assertEqual(execution["stdin"].count(secret), 1)
+        self.assertIn("Default review criteria:", execution["stdin"])
         self.assertNotIn("main..HEAD", execution["stdin"])
         self.assertEqual(envelope["scope"]["preflight_range"], "main..HEAD")
         self.assertEqual(envelope["scope"]["kind"], "custom")
