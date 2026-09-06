@@ -262,7 +262,7 @@ Structured review 預設使用 [references/review_output_schema.json](references
 - Defensive security：描述風險與修法，不產生 exploit walkthrough。
 - Independent verification：主 agent 必須重新核對高風險 finding，不能把 reviewer 當成最終裁決者。
 - Quick 只做 triage，不代表 quality gate 完成；窄 tracer 先跑 bounded `standard`，證據不足時才明確升級 `deep`。
-- P0–P2 為 `blocked`；僅 P3 為 `passed_with_warnings`。P2 必須修正，或記錄理由後針對該範圍重跑 reviewer。
+- P0–P2 為 `blocked`；僅 P3 為 `passed_with_warnings`。原始結果保留不改寫。一般第二意見由主代理附證據記錄採納／不採納，未變更程式或關鍵證據不必重跑；正式品質關卡依專案要求修正、複查或取得例外，不把 blocked 說成 passed。
 
 
 ## 自訂格式與驗證依賴
