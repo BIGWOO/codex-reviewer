@@ -38,20 +38,23 @@ Native review 適合標準變更審查。Generic review 適合規格對照、架
 
 ## 安裝來源與自動更新
 
-Helper 預設使用以下優先序：
+Helper 預設不安裝或更新 CLI；先依以下優先序選取並檢查現有版本：
 
 1. `--codex-bin` 或 `CODEX_REVIEWER_CODEX_BIN`：使用者明確 pin，不自動更新。
 2. Global npm `@openai/codex`：只要偵測到就優先沿用，不因 standalone 較新而切換來源。
 3. 官方 standalone：從 PATH、`CODEX_INSTALL_DIR`、`$CODEX_HOME/packages/standalone/current` 或平台預設位置尋找。
 4. 其他來源：只有停用更新或 standalone bootstrap 失敗時才作為相容 fallback。
 
-沒有 npm 或 standalone 時，macOS/Linux 透過 `https://chatgpt.com/codex/install.sh`、Windows 透過 `https://chatgpt.com/codex/install.ps1` bootstrap 最新 standalone。既有 npm／standalone 則呼叫選定 binary 的 `codex update`，讓 Codex 自己保留原安裝管理器。
+只有明確啟用更新時才會安裝或修復：沒有 npm 或 standalone 時，macOS/Linux 透過 `https://chatgpt.com/codex/install.sh`、Windows 透過 `https://chatgpt.com/codex/install.ps1` bootstrap 最新 standalone。既有 npm／standalone 則呼叫選定 binary 的 `codex update`，讓 Codex 自己保留原安裝管理器。
 
 成功 update check 會以 binary path、版本及安裝來源快取 24 小時。失敗會退避 15 分鐘，且不會把 npm 使用者切換到 standalone；若現有 stable CLI 仍符合最低版本，review 會帶 warning 繼續。
 
 控制面：
 
 ```bash
+# 明確啟用單次更新，尊重快取
+python3 scripts/codex_review.py --update-check doctor
+
 # 單次略過
 python3 scripts/codex_review.py --no-update-check doctor
 
@@ -61,6 +64,8 @@ python3 scripts/codex_review.py --force-update-check doctor
 # CI / offline
 CODEX_REVIEWER_AUTO_UPDATE=0 python3 scripts/codex_review.py doctor
 ```
+
+更新預設關閉。`--update-check`、`--force-update-check` 是單次 opt-in，會覆蓋 `CODEX_REVIEWER_AUTO_UPDATE=0`；`--no-update-check` 是單次 opt-out。一般審查可透過 `CODEX_REVIEWER_AUTO_UPDATE=1` 啟用，doctor 不繼承環境 opt-in；dry-run 一律不更新，明確 binary pin 永不自動更新。三個更新旗標互斥。Python API 的 `check_updates=None` 使用預設／環境政策，True 明確啟用，False 關閉（含 force）。
 
 `CODEX_REVIEWER_UPDATE_TTL_SECONDS` 調整快取秒數；`CODEX_REVIEWER_UPDATE_CACHE` 指定 cache file。結果 envelope 的 `install_method` 與 `update`、doctor 的 `update` diagnostic 會記錄最終選擇與檢查狀態。
 
@@ -315,7 +320,7 @@ Generic 跨 repo review 使用 version 1 scope manifest：
 
 `--max-tool-calls` 與 `--max-jsonl-bytes` 對既有模式預設 unlimited。Bounded 固定 max tools 0，JSONL 預設 262144 bytes；超限時 helper 立即終止 process group、保存 raw/partial evidence，且永遠不產生成功 final。Timeout 後不得在 scope 不變時只替換 mode、preset、`--ignore-user-config` 或 `--isolated` 重試。
 
-Helper 的 `doctor` 與 `--dry-run` 若沒有明確 pin 或 `--no-update-check`，仍可能先更新 CLI；純診斷時要明確停用更新。
+Helper 的 `doctor` 預設不更新，只有單次更新旗標才會更新；`--dry-run` 一律不更新。兩者仍會讀取版本與模型清單，不保證離線。
 
 ## 診斷
 

@@ -6,12 +6,12 @@
 
 - Python 3.10+
 - Git
-- 首次 bootstrap／定期更新時可連線至 OpenAI 官方 installer 或 npm registry
+- 已安裝相容的 Codex CLI；只有明確要求安裝／更新時需要連線至官方 installer 或 npm registry
 - 已完成 Codex CLI 登入，且帳號可使用至少一個支援模型
 
-若尚未安裝 Codex CLI，skill 會預設 bootstrap 最新 standalone；若已安裝 global npm `@openai/codex`，則保留 npm 安裝來源。最終執行版本必須是 `0.144.1` 或更新的 stable version。
+預設只檢查已安裝 CLI 的相容性，缺少或過舊就回報，不自動 bootstrap。明確啟用更新時才依原安裝來源更新，缺少 CLI 才安裝 standalone。最終版本必須是 `0.144.1` 或更新的 stable version。
 
-自動更新只更新 Codex CLI，不會修改被審查 repo，也不會覆寫 `$CODEX_HOME` config。
+明確啟用的更新只更新 Codex CLI，不會修改被審查 repo，也不會覆寫 `$CODEX_HOME` config。
 
 ## Install
 
@@ -35,12 +35,9 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 
 ### 自動選擇與更新
 
-預設政策：
+預設不安裝／更新 CLI。一般審查可用 `--update-check` 單次啟用，或由使用者設定 `CODEX_REVIEWER_AUTO_UPDATE=1`；`--no-update-check` 覆蓋環境設定。`doctor` 需要單次旗標才會更新，`--dry-run` 即使有更新旗標也不更新。
 
-1. `--codex-bin`／`CODEX_REVIEWER_CODEX_BIN` 明確 pin，不自動更新。
-2. 偵測到 global npm Codex 時，優先使用並透過 `codex update` 更新 npm 版本。
-3. 沒有 npm 版本時，使用或 bootstrap 官方 standalone，再透過 `codex update` 更新。
-4. 成功檢查會快取 24 小時；失敗會退避 15 分鐘。現有版本仍相容時會警告後繼續。
+啟用更新後保留原有機制：明確 binary pin 永不自動更新；npm 優先且保留來源；否則選 standalone。成功快取 24 小時，失敗退避 15 分鐘，相容的現有 CLI 可帶警告繼續。
 
 機器上可能同時存在 npm、Homebrew、App 內嵌或舊版 binary。可用以下命令確認：
 
@@ -66,19 +63,19 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 export CODEX_REVIEWER_CODEX_BIN=/absolute/path/to/codex
 ```
 
-`doctor` 不呼叫模型；它檢查 binary version、model catalog、Git 與 reviewer 所需能力。遇到 config 問題時再加 `--strict-config`。單獨 `doctor` 或 `--dry-run` 仍可能更新 CLI；純診斷應搭配 `--no-update-check`。
+`doctor` 不呼叫模型；它檢查 binary version、model catalog、Git 與 reviewer 所需能力。遇到 config 問題時再加 `--strict-config`。`doctor` 預設不更新 CLI，`--dry-run` 一律不更新。診斷仍可能查詢模型清單，不代表完全離線。
 
 更新控制：
 
 ```bash
-# 本次略過自動更新
+# 本次略過使用者環境設定啟用的更新
 python3 "$SKILL_DIR/scripts/codex_review.py" --no-update-check doctor
 
-# 忽略 24 小時快取，立即檢查
+# 明確啟用本次安裝／更新，忽略 24 小時快取
 python3 "$SKILL_DIR/scripts/codex_review.py" --force-update-check doctor
 
-# CI／離線環境全域停用
-export CODEX_REVIEWER_AUTO_UPDATE=0
+# 可選：一般審查啟用更新（doctor 與 dry-run 不繼承此設定）
+export CODEX_REVIEWER_AUTO_UPDATE=1
 ```
 
 可用 `CODEX_REVIEWER_UPDATE_TTL_SECONDS` 調整快取秒數，或用 `CODEX_REVIEWER_UPDATE_CACHE` 指定 cache file。
@@ -212,7 +209,8 @@ Bounded 固定 bundled schema、`standard` 預設、`--ignore-user-config`、min
 - `--profile <NAME>`：載入 `$CODEX_HOME/<NAME>.config.toml` V2 profile。
 - `--fast`：使用 catalog 提供的 Fast tier；增加 usage，只能 opt-in。
 - `--strict-config`：未知 config field 直接失敗，適合 diagnostic/CI。
-- `--no-update-check`：本次停用 Codex CLI 自動安裝／更新檢查。
+- `--update-check`：明確啟用本次 CLI 安裝／更新，尊重快取。
+- `--no-update-check`：本次停用 CLI 安裝／更新，覆蓋環境設定。
 - `--force-update-check`：忽略快取，立即依既有安裝來源執行更新。
 - `--result-json <FILE>`：額外寫入精簡的 `schema_version: 2` result envelope；不取代 stdout final text，也不重複 raw JSONL。
 - `--include-events`：明確要求把已遮蔽的 events 放入 `--result-json`；一般情況使用 `--output` 保存 raw JSONL。

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tests.helpers import make_fake_codex, read_fake_log
+from tests.helpers import init_git_fixture, make_fake_codex, read_fake_log, run_cli
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -34,6 +34,8 @@ class UpdatePolicyTests(unittest.TestCase):
             "CODEX_INSTALL_DIR": str(root / "home" / ".local" / "bin"),
             "CODEX_REVIEWER_UPDATE_CACHE": str(cache_path),
             "FAKE_CODEX_LOG": str(log_path),
+            "CODEX_REVIEWER_AUTO_UPDATE": "0",
+            "CODEX_REVIEWER_CODEX_BIN": "",
         }
 
     def test_npm_binary_updates_through_its_own_codex_update(self) -> None:
@@ -70,6 +72,7 @@ class UpdatePolicyTests(unittest.TestCase):
             env = self.discovery_env(
                 root, binary, log_path=log_path, cache_path=cache_path
             )
+            env["CODEX_REVIEWER_AUTO_UPDATE"] = "1"
             with mock.patch.dict(os.environ, env, clear=False):
                 first_binary, first = prepare_codex_binary(force_update=True)
                 second_binary, second = prepare_codex_binary()
@@ -115,7 +118,7 @@ class UpdatePolicyTests(unittest.TestCase):
             with (
                 mock.patch.dict(
                     os.environ,
-                    {"CODEX_REVIEWER_UPDATE_CACHE": str(cache)},
+                    {"CODEX_REVIEWER_UPDATE_CACHE": str(cache), "CODEX_REVIEWER_CODEX_BIN": ""},
                     clear=False,
                 ),
                 mock.patch(
@@ -148,7 +151,7 @@ class UpdatePolicyTests(unittest.TestCase):
             with (
                 mock.patch.dict(
                     os.environ,
-                    {"CODEX_REVIEWER_UPDATE_CACHE": str(cache)},
+                    {"CODEX_REVIEWER_UPDATE_CACHE": str(cache), "CODEX_REVIEWER_AUTO_UPDATE": "1", "CODEX_REVIEWER_CODEX_BIN": ""},
                     clear=False,
                 ),
                 mock.patch(
@@ -168,6 +171,83 @@ class UpdatePolicyTests(unittest.TestCase):
         self.assertTrue(outcome.warnings)
         self.assertEqual(backed_off.skipped_reason, "recent update failure backoff")
         self.assertEqual(run_update.call_count, 1)
+
+    def test_default_does_not_bootstrap_missing_cli(self) -> None:
+        missing = CodexBinary(requested="codex", path=None, error="missing")
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("codex_reviewer.updates.CodexBinary.discover", return_value=missing),
+            mock.patch("codex_reviewer.updates._run_update") as update,
+        ):
+            binary, outcome = prepare_codex_binary()
+        self.assertIsNone(binary.path)
+        self.assertFalse(outcome.enabled)
+        update.assert_not_called()
+
+    def test_update_opt_in_matrix(self) -> None:
+        # Observe real fake-CLI calls, not just the parsed flag value.
+        cases = [
+            (None, None, False, False),
+            ("1", None, False, True),
+            ("0", True, False, True),
+            ("0", None, True, True),
+            ("1", False, False, False),
+            ("1", False, True, False),
+        ]
+        for env_value, check, force, expected in cases:
+            with self.subTest(env=env_value, check=check, force=force), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                binary = make_fake_codex(root / "node_modules" / "@openai" / "codex")
+                log = root / "calls.json"
+                env = self.discovery_env(root, binary, log_path=log, cache_path=root / "cache.json")
+                if env_value is None:
+                    env.pop("CODEX_REVIEWER_AUTO_UPDATE")
+                else:
+                    env["CODEX_REVIEWER_AUTO_UPDATE"] = env_value
+                with mock.patch.dict(os.environ, env, clear=True):
+                    _, outcome = prepare_codex_binary(check_updates=check, force_update=force)
+                self.assertEqual(outcome.attempted, expected)
+                self.assertEqual(any(c["argv"] == ["update"] for c in read_fake_log(log)), expected)
+
+    def test_cli_diagnostics_and_review_update_policy(self) -> None:
+        cases = [
+            ("doctor", [], "1", False),
+            ("doctor", ["--update-check"], "0", True),
+            ("doctor", ["--force-update-check"], "0", True),
+            ("doctor", ["--dry-run", "--force-update-check"], "1", False),
+            ("native-review", ["--uncommitted"], "0", False),
+            ("native-review", ["--uncommitted", "--update-check"], "0", True),
+            ("native-review", ["--uncommitted", "--no-update-check"], "1", False),
+            ("native-review", ["--uncommitted", "--dry-run"], "1", False),
+            ("native-review", ["--uncommitted", "--dry-run", "--force-update-check"], "1", False),
+        ]
+        for mode, flags, env_value, expected in cases:
+            with self.subTest(mode=mode, flags=flags), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo = init_git_fixture(root / "repo")
+                binary = make_fake_codex(root / "node_modules" / "@openai" / "codex")
+                log = root / "calls.json"
+                env = self.discovery_env(root, binary, log_path=log, cache_path=root / "cache.json")
+                env["CODEX_REVIEWER_AUTO_UPDATE"] = env_value
+                # Keep git available while the fake npm binary remains first in PATH.
+                env["PATH"] += os.pathsep + str(Path(shutil.which("git")).parent)
+                result = run_cli(mode, "--cd", str(repo), *flags, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = read_fake_log(log)
+                self.assertEqual(any(c["argv"] == ["update"] for c in calls), expected)
+                if mode == "doctor" or "--dry-run" in flags:
+                    self.assertFalse(any("exec" in c["argv"] for c in calls))
+
+    def test_direct_reviewer_dry_run_never_updates(self) -> None:
+        from codex_reviewer.reviewer import CodexReviewer
+        missing = CodexBinary(requested="codex", path=None, error="missing")
+        with (
+            mock.patch("codex_reviewer.updates.CodexBinary.discover", return_value=missing),
+            mock.patch("codex_reviewer.updates._run_update") as update,
+        ):
+            reviewer = CodexReviewer(dry_run=True, update_check=True, force_update_check=True)
+        self.assertFalse(reviewer.update_outcome.enabled)
+        update.assert_not_called()
 
 
 if __name__ == "__main__":

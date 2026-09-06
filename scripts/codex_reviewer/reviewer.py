@@ -65,8 +65,8 @@ def _version_failure(binary: CodexBinary) -> str:
     minimum = format_version(MIN_CODEX_VERSION)
     return (
         f"Codex CLI {minimum}+ is required. Selected path: {path}; reported version: {actual}. "
-        "Run the selected binary's `codex update`, or rerun without an explicit "
-        "--codex-bin so Codex Reviewer can repair the detected installation source."
+        "Install or update Codex CLI explicitly, or run `doctor --force-update-check` "
+        "without an explicit binary pin to repair the detected installation source."
     )
 
 
@@ -215,7 +215,7 @@ class CodexReviewer:
         fast: bool = False,
         dry_run: bool = False,
         minimal_context: bool = True,
-        update_check: bool = True,
+        update_check: Optional[bool] = None,
         force_update_check: bool = False,
     ):
         self.explicit_model = model
@@ -261,8 +261,8 @@ class CodexReviewer:
         self.minimal_context = minimal_context
         self.binary, self.update_outcome = prepare_codex_binary(
             codex_bin,
-            check_updates=update_check,
-            force_update=force_update_check,
+            check_updates=False if dry_run else update_check,
+            force_update=False if dry_run else force_update_check,
         )
         self.catalog: Optional[ModelCatalog] = None
         self.selection: Optional[ModelSelection] = None
@@ -1003,13 +1003,13 @@ def run_doctor(
     cwd: Optional[str] = None,
     strict_config: bool = False,
     profile: Optional[str] = None,
-    update_check: bool = True,
+    update_check: Optional[bool] = None,
     force_update_check: bool = False,
 ) -> Dict[str, object]:
     """Run explicit, non-inference health checks with the same selected binary."""
     binary, update_outcome = prepare_codex_binary(
         codex_bin,
-        check_updates=update_check,
+        check_updates=update_check if update_check is not None else force_update_check,
         force_update=force_update_check,
     )
     root = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()

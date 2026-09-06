@@ -42,6 +42,15 @@ REVIEW_TYPES = (
 )
 
 
+def _update_policy(args: argparse.Namespace, *, diagnostic: bool = False) -> Optional[bool]:
+    if args.dry_run or args.no_update_check:
+        return False
+    if args.update_check or args.force_update_check:
+        return True
+    # Diagnostics require per-run opt-in; normal reviews may use the env opt-in.
+    return False if diagnostic else None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run an independent read-only Codex CLI review gate.",
@@ -61,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit Codex CLI binary; overrides CODEX_REVIEWER_CODEX_BIN and PATH.",
     )
     update_group = parser.add_mutually_exclusive_group()
+    update_group.add_argument(
+        "--update-check",
+        action="store_true",
+        help="Opt into Codex install/update for this run, respecting the update cache.",
+    )
     update_group.add_argument(
         "--no-update-check",
         action="store_true",
@@ -103,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate and print the sanitized command without inference.",
+        help="Validate and print the sanitized command without inference or CLI updates.",
     )
     parser.add_argument("--cd", dest="cwd", help="Repository root passed to Codex.")
     parser.add_argument(
@@ -416,7 +430,7 @@ def _reviewer(args: argparse.Namespace, preset: str) -> CodexReviewer:
         fast=args.fast,
         dry_run=args.dry_run,
         minimal_context=True if bounded else args.minimal_context,
-        update_check=not args.no_update_check,
+        update_check=_update_policy(args),
         force_update_check=args.force_update_check,
     )
 
@@ -529,7 +543,7 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
             cwd=args.cwd,
             strict_config=args.strict_config,
             profile=args.profile,
-            update_check=not args.no_update_check,
+            update_check=_update_policy(args, diagnostic=True),
             force_update_check=args.force_update_check,
         )
         return result

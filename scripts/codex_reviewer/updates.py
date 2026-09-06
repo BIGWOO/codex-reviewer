@@ -52,7 +52,7 @@ class UpdateOutcome:
 
 
 def _env_enabled() -> bool:
-    value = os.environ.get(AUTO_UPDATE_ENV, "1").strip().lower()
+    value = os.environ.get(AUTO_UPDATE_ENV, "0").strip().lower()
     return value not in {"0", "false", "no", "off"}
 
 
@@ -242,7 +242,7 @@ def _should_repair(binary: CodexBinary, detail: str) -> bool:
 def prepare_codex_binary(
     requested: Optional[str] = None,
     *,
-    check_updates: bool = True,
+    check_updates: Optional[bool] = None,
     force_update: bool = False,
     timeout: int = DEFAULT_UPDATE_TIMEOUT,
 ) -> tuple[CodexBinary, UpdateOutcome]:
@@ -254,7 +254,12 @@ def prepare_codex_binary(
 
     binary = CodexBinary.discover(requested)
     explicit = requested is not None or bool(os.environ.get(CODEX_BIN_ENV))
-    enabled = check_updates and _env_enabled()
+    # Explicit flags override the environment; False also suppresses force_update.
+    enabled = (
+        check_updates
+        if check_updates is not None
+        else force_update or _env_enabled()
+    )
     outcome = UpdateOutcome(
         enabled=enabled,
         install_method=binary.install_method,

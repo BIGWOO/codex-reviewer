@@ -20,15 +20,10 @@ description: Use OpenAI Codex CLI as an independent, read-only second-opinion re
 
 ## CLI Install & Update Policy
 
-每次 helper 啟動時先執行安裝來源感知的 update preflight；更新只作用於 Codex CLI，不得修改被審查 repo：
-
-1. `--codex-bin` 或 `CODEX_REVIEWER_CODEX_BIN` 是明確 pin，完全照用且不自動更新。
-2. 若偵測到 global npm `@openai/codex`，優先使用 npm 版本，即使 standalone 也存在。
-3. 沒有 npm 版本時，使用官方 standalone；若尚未安裝則透過 OpenAI 官方 installer bootstrap。
-4. 由選定 binary 的 `codex update` 判斷並更新原安裝來源；舊版不支援 update 時才用同來源 repair。
-5. 成功檢查後快取 24 小時；失敗則退避 15 分鐘。離線時若既有 stable CLI 符合最低版本，警告後繼續。
-
-`--no-update-check` 可單次停用；`--force-update-check` 可忽略快取。CI／離線環境可設 `CODEX_REVIEWER_AUTO_UPDATE=0`；TTL 可用 `CODEX_REVIEWER_UPDATE_TTL_SECONDS` 調整。
+預設只沿用現有相容 CLI，缺少或過舊就回報，不自動安裝／更新。
+一般審查可用 `--update-check` 或 `CODEX_REVIEWER_AUTO_UPDATE=1` 明確啟用；`--no-update-check` 覆蓋環境設定。`--force-update-check` 啟用更新並忽略快取。
+`doctor` 只有單次更新旗標才會更新；`--dry-run` 一律不更新。明確 binary pin 永不自動更新。
+啟用後保留安裝來源、成功快取與失敗退避，詳見 [更新政策](references/codex_cli_reference.md#安裝來源與自動更新)。
 
 ## Workflow
 
@@ -122,7 +117,7 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
   --result-json /tmp/codex-review-doctor.json
 ```
 
-使用 `--dry-run --no-update-check` 檢查最後命令；單獨 `--dry-run` 或 `doctor` 仍可能執行 CLI 自動更新。使用 `--codex-bin /absolute/path/codex` 或 `CODEX_REVIEWER_CODEX_BIN` 選定並自行管理固定 binary。需要附加 repo-specific criteria 時用 `--instructions`，不要把 scope 與 prompt 偷混進 native positional argument。
+使用 `--dry-run` 檢查最後命令，不執行 CLI 更新；`doctor` 預設不更新，只有單次更新旗標才會更新。使用 `--codex-bin /absolute/path/codex` 或 `CODEX_REVIEWER_CODEX_BIN` 選定並自行管理固定 binary。需要附加 repo-specific criteria 時用 `--instructions`，不要把 scope 與 prompt 偷混進 native positional argument。
 
 跨 repo 的 generic review 必須使用 `--scope-manifest <JSON>` 宣告每個 repo 的 `uncommitted`、`base`、`commit` 或 `range` scope。Deep custom review 必須提供 manifest 或 `--review-range`，避免未 sizing 的廣域審查。
 
