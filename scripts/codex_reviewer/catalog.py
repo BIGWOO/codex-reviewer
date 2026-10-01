@@ -13,38 +13,20 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 CODEX_BIN_ENV = "CODEX_REVIEWER_CODEX_BIN"
-MIN_CODEX_VERSION = (0, 144, 1)
+MIN_CODEX_VERSION = (0, 159, 3)
 DEFAULT_PRESET = "standard"
-PRESET_NAMES = ("quick", "standard", "deep", "ultra")
+DEFAULT_MODEL = "gpt-6.1-sol"
+RETIRED_MODELS = frozenset({"gpt-5.5"})
+PRESET_EFFORTS: Mapping[str, str] = {
+    "quick": "medium",
+    "standard": "high",
+    "deep": "xhigh",
+    "ultra": "ultra",
+}
+PRESET_NAMES = tuple(PRESET_EFFORTS)
 INSTALL_NPM = "npm"
 INSTALL_STANDALONE = "standalone"
 INSTALL_OTHER = "other"
-
-
-@dataclass(frozen=True)
-class PresetCandidate:
-    model: str
-    effort: str
-
-
-PRESET_CANDIDATES: Mapping[str, Tuple[PresetCandidate, ...]] = {
-    "quick": (
-        PresetCandidate("gpt-6-astra", "medium"),
-        PresetCandidate("gpt-5.6-sol", "medium"),
-        PresetCandidate("gpt-5.5", "medium"),
-    ),
-    "standard": (
-        PresetCandidate("gpt-6-astra", "high"),
-        PresetCandidate("gpt-5.6-sol", "high"),
-        PresetCandidate("gpt-5.5", "high"),
-    ),
-    "deep": (
-        PresetCandidate("gpt-6-astra", "xhigh"),
-        PresetCandidate("gpt-5.6-sol", "xhigh"),
-        PresetCandidate("gpt-5.5", "xhigh"),
-    ),
-    "ultra": (PresetCandidate("gpt-6-astra", "ultra"),),
-}
 
 
 class PresetResolutionError(ValueError):
@@ -461,7 +443,7 @@ class ModelCatalog:
             if not isinstance(item, Mapping):
                 continue
             model = ModelInfo.from_payload(item)
-            if model.slug:
+            if model.slug and model.slug not in RETIRED_MODELS:
                 models[model.slug] = model
         if not models:
             return cls(
@@ -483,17 +465,6 @@ class ModelSelection:
     warnings: Tuple[str, ...] = ()
 
 
-def _matching_candidate(preset: str, model: str) -> Optional[PresetCandidate]:
-    return next(
-        (
-            candidate
-            for candidate in PRESET_CANDIDATES[preset]
-            if candidate.model == model
-        ),
-        None,
-    )
-
-
 def _validate_effort(model: ModelInfo, effort: str) -> None:
     if not model.reasoning_efforts:
         raise PresetResolutionError(
@@ -512,86 +483,29 @@ def resolve_model_selection(
     explicit_model: Optional[str] = None,
     explicit_effort: Optional[str] = None,
 ) -> ModelSelection:
-    if preset not in PRESET_CANDIDATES:
+    if preset not in PRESET_EFFORTS:
         raise PresetResolutionError(f"Unknown review preset: {preset}")
-    candidates = PRESET_CANDIDATES[preset]
-    warnings: List[str] = []
 
     if explicit_model == "gpt-5.6":
         explicit_model = "gpt-5.6-sol"
 
-    if catalog.error and not catalog.models and (explicit_model or explicit_effort):
+    selected_model = explicit_model or DEFAULT_MODEL
+    if selected_model in RETIRED_MODELS:
         raise PresetResolutionError(
-            f"Model catalog is required to validate an explicit model or reasoning effort: {catalog.error}"
+            f"Model {selected_model} is retired from this reviewer; use {DEFAULT_MODEL}"
         )
-
-    if explicit_effort and not explicit_model:
-        preferred = candidates[0]
-        model_info = catalog.get(preferred.model)
-        if model_info is None:
-            raise PresetResolutionError(
-                f"Preset {preset} requires preferred model {preferred.model} when reasoning effort is explicit"
-            )
-        _validate_effort(model_info, explicit_effort)
-        return ModelSelection(
-            preset, preferred.model, explicit_effort, False, tuple(warnings)
-        )
-
-    if explicit_model:
-        matching = _matching_candidate(preset, explicit_model)
-        effort = explicit_effort or (
-            matching.effort if matching else candidates[0].effort
-        )
-        model_info = catalog.get(explicit_model)
-        if model_info is None:
-            raise PresetResolutionError(
-                f"Requested model is not available in the Codex catalog: {explicit_model}"
-            )
-        _validate_effort(model_info, effort)
-        return ModelSelection(preset, explicit_model, effort, False, tuple(warnings))
-
-    for index, candidate in enumerate(candidates):
-        model_info = catalog.get(candidate.model)
-        if model_info is None:
-            continue
-        effort = explicit_effort or candidate.effort
-        try:
-            _validate_effort(model_info, effort)
-        except PresetResolutionError as exc:
-            warnings.append(
-                f"Skipping automatic preset candidate {candidate.model}: {exc}"
-            )
-            continue
-        if index:
-            warnings.append(
-                f"Preset {preset} fell back to {candidate.model} because preferred models are unavailable"
-            )
-        return ModelSelection(
-            preset, candidate.model, effort, index > 0, tuple(warnings)
-        )
-
-    if preset == "ultra":
+    if catalog.error and not catalog.models:
         raise PresetResolutionError(
-            "Preset ultra requires gpt-6-astra with ultra reasoning; no fallback is allowed"
+            f"Model catalog is required to validate {selected_model}: {catalog.error}"
         )
-
-    if catalog.error:
-        conservative = {
-            "quick": PresetCandidate("gpt-5.5", "medium"),
-            "standard": PresetCandidate("gpt-5.5", "high"),
-            "deep": PresetCandidate("gpt-5.5", "xhigh"),
-        }[preset]
-        warnings.append(
-            f"Model catalog unavailable; conservatively falling back to gpt-5.5: {catalog.error}"
+    model_info = catalog.get(selected_model)
+    if model_info is None:
+        raise PresetResolutionError(
+            f"Requested model is not available in the Codex catalog: {selected_model}; no automatic model substitution"
         )
-        return ModelSelection(
-            preset, conservative.model, conservative.effort, True, tuple(warnings)
-        )
-
-    available = ", ".join(sorted(catalog.models)) or "none"
-    raise PresetResolutionError(
-        f"No model candidate for preset {preset} is available; catalog contains: {available}"
-    )
+    effort = explicit_effort or PRESET_EFFORTS[preset]
+    _validate_effort(model_info, effort)
+    return ModelSelection(preset, selected_model, effort, False)
 
 
 def supported_efforts(catalog: ModelCatalog, model: str) -> Sequence[str]:

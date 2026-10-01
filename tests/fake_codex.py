@@ -14,6 +14,15 @@ import time
 DEFAULT_CATALOG = {
     "models": [
         {
+            "slug": "gpt-6.1-sol",
+            "supported_reasoning_levels": [
+                {"effort": effort} for effort in ("low", "medium", "high", "xhigh", "max", "ultra")
+            ],
+            "context_window": 272000,
+            "max_context_window": 872000,
+            "additional_speed_tiers": ["fast"],
+        },
+        {
             "slug": "gpt-6-astra",
             "supported_reasoning_levels": [
                 {"effort": effort} for effort in ("low", "medium", "high", "xhigh", "max", "ultra")
@@ -40,15 +49,6 @@ DEFAULT_CATALOG = {
             ],
             "context_window": 372000,
             "max_context_window": 372000,
-            "additional_speed_tiers": [],
-        },
-        {
-            "slug": "gpt-5.5",
-            "supported_reasoning_levels": [
-                {"effort": effort} for effort in ("low", "medium", "high", "xhigh")
-            ],
-            "context_window": 272000,
-            "max_context_window": 272000,
             "additional_speed_tiers": [],
         },
     ]
@@ -116,7 +116,7 @@ def main() -> int:
     args = sys.argv[1:]
     if "--version" in args or args == ["-V"]:
         _append_log(None)
-        print(f"codex-cli {_read_text('.fake_version', '0.144.1')}")
+        print(f"codex-cli {_read_text('.fake_version', '0.159.3')}")
         return 0
 
     if args == ["update"]:

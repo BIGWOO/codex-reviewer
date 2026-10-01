@@ -19,7 +19,7 @@ FAKE_CODEX_SOURCE = ROOT / "tests" / "fake_codex.py"
 
 def make_fake_codex(
     parent: Path,
-    version: str = "0.144.1",
+    version: str = "0.159.3",
     catalog: dict[str, Any] | None = None,
 ) -> Path:
     directory = parent / f"codex-{version}"

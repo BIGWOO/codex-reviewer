@@ -12,7 +12,9 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .bounded import BoundedPacket
 from .catalog import (
+    DEFAULT_MODEL,
     DEFAULT_PRESET,
+    PRESET_EFFORTS,
     MIN_CODEX_VERSION,
     CodexBinary,
     ModelCatalog,
@@ -41,8 +43,7 @@ from .schema import SchemaValidationError, load_validator, result_error
 from .prompts import DEFAULT_REVIEW_CRITERIA
 
 
-DEFAULT_MODEL = "gpt-6-astra"
-DEFAULT_REASONING_EFFORT = "high"
+DEFAULT_REASONING_EFFORT = PRESET_EFFORTS[DEFAULT_PRESET]
 DEFAULT_TIMEOUT = 300
 DEFAULT_IDLE_TIMEOUT = 180
 DEFAULT_BOUNDED_TIMEOUT = 600
@@ -52,8 +53,8 @@ DEFAULT_MAX_DIFF_LINES = 3000
 MAX_EXPLICIT_FILES = 15
 MAX_EXPLICIT_LINES = 1200
 UNCOMMITTED_FILE_WARNING_THRESHOLD = 10
-VERIFIED_CODEX_VERSION = MIN_CODEX_VERSION
-SOURCE_REVIEWED_CODEX_VERSION = (0, 153, 3)
+COMPATIBILITY_CODEX_VERSION = MIN_CODEX_VERSION
+SOURCE_REVIEWED_CODEX_VERSION = (0, 159, 3)
 BUNDLED_SCHEMA = (
     Path(__file__).resolve().parents[2] / "references" / "review_output_schema.json"
 )
@@ -286,10 +287,10 @@ class CodexReviewer:
         mode = failure_mode or ("native" if native else "generic")
         if not self.binary.path or self.binary.error or not self.binary.supported:
             return self._failure(mode, _version_failure(self.binary))
-        if self.binary.version and self.binary.version > VERIFIED_CODEX_VERSION:
-            verified = format_version(VERIFIED_CODEX_VERSION)
+        if self.binary.version and self.binary.version > COMPATIBILITY_CODEX_VERSION:
+            verified = format_version(COMPATIBILITY_CODEX_VERSION)
             warning = (
-                f"Codex CLI {self.binary.version_text} is newer than verified {verified}; "
+                f"Codex CLI {self.binary.version_text} is newer than compatibility baseline {verified}; "
                 f"using capability restrictions source-reviewed through {format_version(SOURCE_REVIEWED_CODEX_VERSION)}; "
                 "newer CLI inference behavior has not been acceptance-tested"
             )
@@ -366,12 +367,12 @@ class CodexReviewer:
                 )
             if self.schema_file:
                 return (
-                    "Native review cannot use --schema: Codex CLI through 0.153.3 accepts the flag but "
+                    "Native review cannot use --schema: Codex CLI through 0.159.3 accepts the flag but "
                     "the review implementation ignores it; use structured-review or generic mode"
                 )
             if self.images:
                 return (
-                    "Native review cannot use --image: Codex CLI through 0.153.3 accepts image input but "
+                    "Native review cannot use --image: Codex CLI through 0.159.3 accepts image input but "
                     "the review implementation ignores it; use generic mode"
                 )
             if self.search:
@@ -1009,7 +1010,7 @@ def run_doctor(
     """Run explicit, non-inference health checks with the same selected binary."""
     binary, update_outcome = prepare_codex_binary(
         codex_bin,
-        check_updates=update_check if update_check is not None else force_update_check,
+        check_updates=update_check,
         force_update=force_update_check,
     )
     root = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
@@ -1064,9 +1065,9 @@ def run_doctor(
                 "install_method": binary.install_method,
             },
         )
-        if binary.version and binary.version > VERIFIED_CODEX_VERSION:
+        if binary.version and binary.version > COMPATIBILITY_CODEX_VERSION:
             warnings.append(
-                f"Codex CLI {binary.version_text} is newer than verified {format_version(VERIFIED_CODEX_VERSION)}"
+                f"Codex CLI {binary.version_text} is newer than compatibility baseline {format_version(COMPATIBILITY_CODEX_VERSION)}"
             )
 
     catalog = ModelCatalog(error="binary unavailable", source="unavailable")

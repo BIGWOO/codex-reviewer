@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -17,7 +18,7 @@ if str(SCRIPTS) not in os.sys.path:
 
 from codex_reviewer.catalog import (  # noqa: E402
     CODEX_BIN_ENV,
-    PRESET_CANDIDATES,
+    PRESET_EFFORTS,
     CodexBinary,
     ModelCatalog,
     ModelInfo,
@@ -45,8 +46,8 @@ class CodexBinaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = make_fake_codex(root / "old", "0.142.5")
-            stable = make_fake_codex(root / "stable", "0.144.1")
-            alpha = make_fake_codex(root / "alpha", "0.145.0-alpha.1")
+            stable = make_fake_codex(root / "stable", "0.159.3")
+            alpha = make_fake_codex(root / "alpha", "0.160.0-alpha.1")
             python_dir = str(
                 Path(shutil.which("python3") or sys.executable).resolve().parent
             )
@@ -66,17 +67,17 @@ class CodexBinaryTests(unittest.TestCase):
                 resolved = CodexBinary.discover()
 
         self.assertEqual(Path(resolved.path or "").resolve(), stable.resolve())
-        self.assertEqual(resolved.version, (0, 144, 1))
+        self.assertEqual(resolved.version, (0, 159, 3))
 
     def test_npm_install_wins_over_newer_standalone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             npm_binary = make_fake_codex(
-                root / "node_modules" / "@openai" / "codex", "0.144.1"
+                root / "node_modules" / "@openai" / "codex", "0.159.3"
             )
             standalone = make_fake_codex(
-                root / ".codex" / "packages" / "standalone" / "releases" / "0.145.0",
-                "0.145.0",
+                root / ".codex" / "packages" / "standalone" / "releases" / "0.160.0",
+                "0.160.0",
             )
             python_dir = str(
                 Path(shutil.which("python3") or sys.executable).resolve().parent
@@ -102,8 +103,8 @@ class CodexBinaryTests(unittest.TestCase):
     def test_flag_precedes_environment_and_environment_precedes_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            path_binary = make_fake_codex(root / "path", "0.144.1")
-            env_binary = make_fake_codex(root / "env", "0.145.0")
+            path_binary = make_fake_codex(root / "path", "0.159.3")
+            env_binary = make_fake_codex(root / "env", "0.160.0")
             flag_binary = make_fake_codex(root / "flag", "0.146.0")
             python_dir = str(
                 Path(shutil.which("python3") or sys.executable).resolve().parent
@@ -125,6 +126,9 @@ class CatalogAndPresetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = ModelCatalog(
             models={
+                "gpt-6.1-sol": model(
+                    "gpt-6.1-sol", ("low", "medium", "high", "xhigh", "max", "ultra"), fast=True,
+                ),
                 "gpt-6-astra": model(
                     "gpt-6-astra", ("low", "medium", "high", "xhigh", "max", "ultra"), fast=True,
                 ),
@@ -136,83 +140,64 @@ class CatalogAndPresetTests(unittest.TestCase):
                 "gpt-5.6-terra": model(
                     "gpt-5.6-terra", ("low", "medium", "high", "xhigh", "max", "ultra")
                 ),
-                "gpt-5.5": model("gpt-5.5", ("low", "medium", "high", "xhigh")),
             }
         )
 
     def test_presets_choose_expected_model_and_effort(self) -> None:
         expected = {
-            "quick": ("gpt-6-astra", "medium"),
-            "standard": ("gpt-6-astra", "high"),
-            "deep": ("gpt-6-astra", "xhigh"),
-            "ultra": ("gpt-6-astra", "ultra"),
+            "quick": ("gpt-6.1-sol", "medium"),
+            "standard": ("gpt-6.1-sol", "high"),
+            "deep": ("gpt-6.1-sol", "xhigh"),
+            "ultra": ("gpt-6.1-sol", "ultra"),
         }
         for preset, pair in expected.items():
             with self.subTest(preset=preset):
                 selection = resolve_model_selection(preset, self.catalog)
                 self.assertEqual((selection.model, selection.effort), pair)
 
-        self.assertNotIn(
-            "gpt-5.6-terra",
-            {
-                candidate.model
-                for candidates in PRESET_CANDIDATES.values()
-                for candidate in candidates
-            },
-        )
+    def test_every_preset_requires_default_model_without_substitution(self) -> None:
+        alternatives = ModelCatalog(models={"gpt-6-astra": self.catalog.models["gpt-6-astra"]})
+        for preset in PRESET_EFFORTS:
+            with self.subTest(preset=preset), self.assertRaises(PresetResolutionError):
+                resolve_model_selection(preset, alternatives)
 
-    def test_auto_preset_falls_back_but_ultra_never_does(self) -> None:
-        fallback_catalog = ModelCatalog(
-            models={"gpt-5.5": self.catalog.models["gpt-5.5"]}
-        )
-        standard = resolve_model_selection("standard", fallback_catalog)
-        deep = resolve_model_selection("deep", fallback_catalog)
-        self.assertEqual((standard.model, standard.effort), ("gpt-5.5", "high"))
-        self.assertEqual((deep.model, deep.effort), ("gpt-5.5", "xhigh"))
+    def test_required_effort_failure_does_not_select_another_model(self) -> None:
+        partial = ModelCatalog(models={
+            "gpt-6.1-sol": model("gpt-6.1-sol", ("low", "medium")),
+            "gpt-6-astra": self.catalog.models["gpt-6-astra"],
+        })
         with self.assertRaises(PresetResolutionError):
-            resolve_model_selection("ultra", fallback_catalog)
+            resolve_model_selection("standard", partial)
 
-    def test_auto_preset_skips_candidate_without_required_effort(self) -> None:
-        partial = ModelCatalog(
-            models={
-                "gpt-5.6-sol": model("gpt-5.6-sol", ("low", "medium")),
-                "gpt-5.5": self.catalog.models["gpt-5.5"],
-            }
-        )
-        selection = resolve_model_selection("standard", partial)
-        self.assertEqual((selection.model, selection.effort), ("gpt-5.5", "high"))
-        self.assertTrue(any("Skipping" in warning for warning in selection.warnings))
+    def test_catalog_failure_never_launches_an_unverified_model(self) -> None:
+        unavailable = ModelCatalog(error="refresh and bundled catalog failed", source="unavailable")
+        for kwargs in ({}, {"explicit_model": "gpt-6.1-sol"}, {"explicit_effort": "high"}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(PresetResolutionError):
+                resolve_model_selection("standard", unavailable, **kwargs)
 
-    def test_astra_absence_falls_back_to_sol_only_for_automatic_presets(self) -> None:
-        catalog = ModelCatalog(models={k: v for k, v in self.catalog.models.items() if k != "gpt-6-astra"})
-        for preset in ("quick", "standard", "deep"):
-            selection = resolve_model_selection(preset, catalog)
-            self.assertEqual(selection.model, "gpt-5.6-sol")
-            self.assertTrue(selection.fallback_used)
-            self.assertTrue(selection.warnings)
+    def test_alternative_model_requires_explicit_selection(self) -> None:
+        alternatives = ModelCatalog(models={"gpt-6-astra": self.catalog.models["gpt-6-astra"]})
+        selection = resolve_model_selection("standard", alternatives, explicit_model="gpt-6-astra")
+        self.assertEqual((selection.model, selection.effort), ("gpt-6-astra", "high"))
+        self.assertFalse(selection.fallback_used)
         with self.assertRaises(PresetResolutionError):
-            resolve_model_selection("ultra", catalog)
-        with self.assertRaises(PresetResolutionError):
-            resolve_model_selection("standard", catalog, explicit_model="gpt-6-astra")
-        with self.assertRaises(PresetResolutionError):
-            resolve_model_selection("standard", catalog, explicit_effort="high")
+            resolve_model_selection("standard", alternatives, explicit_effort="high")
 
-    def test_catalog_failure_uses_conservative_gpt_55_for_auto_preset(self) -> None:
-        unavailable = ModelCatalog(
-            error="refresh and bundled catalog failed", source="unavailable"
-        )
-        selection = resolve_model_selection("standard", unavailable)
-        self.assertEqual((selection.model, selection.effort), ("gpt-5.5", "high"))
-        self.assertTrue(selection.warnings)
+    def test_retired_model_is_rejected_even_when_catalog_advertises_it(self) -> None:
+        retired = "gpt-5.5"
+        catalog = ModelCatalog(models={retired: model(retired, ("high",))})
+        with self.assertRaisesRegex(PresetResolutionError, "retired"):
+            resolve_model_selection("standard", catalog, explicit_model=retired)
 
-    def test_explicit_model_or_effort_does_not_fallback(self) -> None:
-        missing_sol = ModelCatalog(models={"gpt-5.5": self.catalog.models["gpt-5.5"]})
-        with self.assertRaises(PresetResolutionError):
-            resolve_model_selection(
-                "standard", missing_sol, explicit_model="gpt-5.6-sol"
-            )
-        with self.assertRaises(PresetResolutionError):
-            resolve_model_selection("standard", missing_sol, explicit_effort="high")
+    def test_retired_model_is_filtered_from_loaded_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = make_fake_codex(root)
+            payload = {"models": [{"slug": "gpt-6.1-sol", "supported_reasoning_levels": [{"effort": "high"}]}, {"slug": "gpt-5.5"}]}
+            (fake.parent / ".fake_catalog.json").write_text(json.dumps(payload), encoding="utf-8")
+            catalog = ModelCatalog.load(CodexBinary.discover(str(fake)))
+        self.assertIsNone(catalog.get("gpt-5.5"))
+        self.assertIsNotNone(catalog.get("gpt-6.1-sol"))
 
     def test_model_alias_and_effort_validation(self) -> None:
         selection = resolve_model_selection(
@@ -223,8 +208,8 @@ class CatalogAndPresetTests(unittest.TestCase):
             resolve_model_selection(
                 "standard",
                 self.catalog,
-                explicit_model="gpt-5.5",
-                explicit_effort="ultra",
+                explicit_model="gpt-6.1-sol",
+                explicit_effort="unsupported",
             )
 
     def test_fast_tier_is_read_from_catalog(self) -> None:

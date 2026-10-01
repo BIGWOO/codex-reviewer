@@ -49,13 +49,13 @@ class UpdatePolicyTests(unittest.TestCase):
             env = self.discovery_env(
                 root, binary, log_path=log_path, cache_path=cache_path
             )
-            env["FAKE_CODEX_UPDATE_VERSION"] = "0.145.0"
+            env["FAKE_CODEX_UPDATE_VERSION"] = "0.160.0"
             with mock.patch.dict(os.environ, env, clear=False):
                 selected, outcome = prepare_codex_binary(force_update=True)
             calls = read_fake_log(log_path)
 
         self.assertEqual(selected.install_method, "npm")
-        self.assertEqual(selected.version, (0, 145, 0))
+        self.assertEqual(selected.version, (0, 160, 0))
         self.assertTrue(outcome.checked)
         self.assertTrue(outcome.updated)
         self.assertIn(["update"], [call["argv"] for call in calls])
@@ -64,8 +64,8 @@ class UpdatePolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = make_fake_codex(
-                root / ".codex" / "packages" / "standalone" / "releases" / "0.144.1",
-                "0.144.1",
+                root / ".codex" / "packages" / "standalone" / "releases" / "0.159.3",
+                "0.159.3",
             )
             log_path = root / "calls.json"
             cache_path = root / "cache" / "update.json"
@@ -89,7 +89,7 @@ class UpdatePolicyTests(unittest.TestCase):
     def test_explicit_binary_is_never_modified_automatically(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            binary = make_fake_codex(root, "0.144.1")
+            binary = make_fake_codex(root, "0.159.3")
             log_path = root / "calls.json"
             cache_path = root / "cache" / "update.json"
             env = self.discovery_env(
@@ -108,8 +108,8 @@ class UpdatePolicyTests(unittest.TestCase):
         installed = CodexBinary(
             requested="codex",
             path="/tmp/standalone/codex",
-            version_text="codex-cli 0.145.0",
-            version=(0, 145, 0),
+            version_text="codex-cli 0.160.0",
+            version=(0, 160, 0),
             install_method="standalone",
         )
         completed = subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
@@ -141,8 +141,8 @@ class UpdatePolicyTests(unittest.TestCase):
         selected = CodexBinary(
             requested="codex",
             path="/tmp/standalone/codex",
-            version_text="codex-cli 0.144.1",
-            version=(0, 144, 1),
+            version_text="codex-cli 0.159.3",
+            version=(0, 159, 3),
             install_method="standalone",
         )
         failed = subprocess.CompletedProcess([], 2, stdout="", stderr="offline")
@@ -166,23 +166,78 @@ class UpdatePolicyTests(unittest.TestCase):
                 _, backed_off = prepare_codex_binary()
 
         self.assertEqual(binary.path, selected.path)
-        self.assertEqual(binary.version, (0, 144, 1))
+        self.assertEqual(binary.version, (0, 159, 3))
         self.assertIsNotNone(outcome.error)
         self.assertTrue(outcome.warnings)
         self.assertEqual(backed_off.skipped_reason, "recent update failure backoff")
         self.assertEqual(run_update.call_count, 1)
 
-    def test_default_does_not_bootstrap_missing_cli(self) -> None:
+    def test_default_bootstraps_missing_cli(self) -> None:
         missing = CodexBinary(requested="codex", path=None, error="missing")
-        with (
-            mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch("codex_reviewer.updates.CodexBinary.discover", return_value=missing),
-            mock.patch("codex_reviewer.updates._run_update") as update,
-        ):
-            binary, outcome = prepare_codex_binary()
-        self.assertIsNone(binary.path)
-        self.assertFalse(outcome.enabled)
-        update.assert_not_called()
+        installed = CodexBinary(
+            requested="codex", path="/tmp/standalone/codex",
+            version_text="codex-cli 0.159.3", version=(0, 159, 3),
+            install_method="standalone",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.dict(os.environ, {"CODEX_REVIEWER_UPDATE_CACHE": str(Path(tmp) / "cache.json")}, clear=True),
+                mock.patch("codex_reviewer.updates.CodexBinary.discover", side_effect=[missing, installed]),
+                mock.patch("codex_reviewer.updates._run_update", return_value=subprocess.CompletedProcess([], 0, "ok", "")) as update,
+            ):
+                binary, outcome = prepare_codex_binary()
+        self.assertTrue(binary.supported)
+        self.assertTrue(outcome.bootstrapped)
+        self.assertTrue(outcome.enabled)
+        update.assert_called_once()
+
+    def test_old_version_is_upgraded_even_with_periodic_updates_disabled_and_fresh_cache(self) -> None:
+        from codex_reviewer.updates import _write_cache
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = make_fake_codex(root / "node_modules" / "@openai" / "codex", "0.159.2")
+            log = root / "calls.json"
+            cache = root / "cache.json"
+            env = self.discovery_env(root, binary, log_path=log, cache_path=cache)
+            env["FAKE_CODEX_UPDATE_VERSION"] = "0.159.3"
+            with mock.patch.dict(os.environ, env, clear=False):
+                _write_cache(cache, CodexBinary.discover())
+                selected, outcome = prepare_codex_binary()
+            self.assertEqual(selected.version, (0, 159, 3))
+            self.assertTrue(outcome.attempted)
+            self.assertFalse(outcome.cache_hit)
+            self.assertTrue(any(c["argv"] == ["update"] for c in read_fake_log(log)))
+
+    def test_below_minimum_cli_never_runs_inference(self) -> None:
+        cases = (
+            ([], "0.159.3", True),
+            ([], "0.159.2", False),
+            (["--no-update-check"], "0.159.3", False),
+            (["--dry-run"], "0.159.3", False),
+            (["--codex-bin"], "0.159.3", False),
+        )
+        for mode in ("doctor", "custom"):
+            for flags, target_version, expected in cases:
+                with self.subTest(mode=mode, flags=flags, target=target_version), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    repo = init_git_fixture(root / "repo")
+                    binary = make_fake_codex(root / "node_modules" / "@openai" / "codex", "0.159.2")
+                    log = root / "calls.json"
+                    env = self.discovery_env(root, binary, log_path=log, cache_path=root / "cache.json")
+                    env["FAKE_CODEX_UPDATE_VERSION"] = target_version
+                    env["PATH"] += os.pathsep + str(Path(shutil.which("git")).parent)
+                    actual_flags = [*flags, str(binary)] if flags == ["--codex-bin"] else flags
+                    target = ["review"] if mode == "custom" else []
+                    result = run_cli(mode, *target, "--cd", str(repo), *actual_flags, env=env)
+                    self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
+                    calls = read_fake_log(log)
+                    self.assertEqual(any("exec" in c["argv"] for c in calls), expected and mode == "custom")
+                    if expected:
+                        upgrade = next(i for i, call in enumerate(calls) if call["argv"] == ["update"])
+                        later = next(i for i, call in enumerate(calls) if "debug" in call["argv"])
+                        self.assertLess(upgrade, later)
+                    else:
+                        self.assertIn("0.159.3", result.stdout + result.stderr)
 
     def test_update_opt_in_matrix(self) -> None:
         # Observe real fake-CLI calls, not just the parsed flag value.
@@ -211,7 +266,7 @@ class UpdatePolicyTests(unittest.TestCase):
 
     def test_cli_diagnostics_and_review_update_policy(self) -> None:
         cases = [
-            ("doctor", [], "1", False),
+            ("doctor", [], "1", True),
             ("doctor", ["--update-check"], "0", True),
             ("doctor", ["--force-update-check"], "0", True),
             ("doctor", ["--dry-run", "--force-update-check"], "1", False),

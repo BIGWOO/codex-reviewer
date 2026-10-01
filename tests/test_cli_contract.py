@@ -55,7 +55,7 @@ class CliContractTests(unittest.TestCase):
         diagnostics = result.stdout + result.stderr
         self.assertIn(str(binary.resolve()), diagnostics)
         self.assertIn("0.143.0", diagnostics)
-        self.assertIn("0.144.1", diagnostics)
+        self.assertIn("0.159.3", diagnostics)
 
     def test_native_prompt_uses_stdin_and_sanitized_argv(self) -> None:
         secret = "SECRET-NATIVE-PROMPT-42"
@@ -153,7 +153,7 @@ class CliContractTests(unittest.TestCase):
         ):
             self.assertIn(key, envelope)
         self.assertEqual(envelope["binary"], str(binary.resolve()))
-        self.assertEqual(envelope["version"], "0.144.1")
+        self.assertEqual(envelope["version"], "0.159.3")
         self.assertEqual(envelope["scope"]["kind"], "custom")
         self.assertNotIn("Review this fixture", envelope["sanitized_command"])
         self.assertIn("<injected>", envelope["sanitized_command"])
@@ -405,7 +405,7 @@ class CliContractTests(unittest.TestCase):
                 str(binary),
                 "--skip-git-repo-check",
                 "--model",
-                "gpt-5.5",
+                "gpt-5.6-terra",
                 "--fast",
                 "custom",
                 "review",
@@ -627,7 +627,7 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("872000", invalid.stderr)
         self.assertIn("model_context_window=872000", implicit_execution["argv"])
 
-    def test_catalog_failure_falls_back_only_for_automatic_selection(self) -> None:
+    def test_catalog_failure_prevents_inference_for_all_selections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = make_fake_codex(root)
@@ -641,7 +641,7 @@ class CliContractTests(unittest.TestCase):
                 "review",
                 env={"FAKE_CODEX_LOG": str(log_path)},
             )
-            self.assertEqual(automatic.returncode, 0, automatic.stderr)
+            self.assertNotEqual(automatic.returncode, 0)
             calls = read_fake_log(log_path)
             explicit = run_cli(
                 "--codex-bin",
@@ -653,11 +653,8 @@ class CliContractTests(unittest.TestCase):
                 "review",
             )
 
-        execution = next(call for call in reversed(calls) if "exec" in call["argv"])
-        self.assertEqual(
-            execution["argv"][execution["argv"].index("--model") + 1], "gpt-5.5"
-        )
-        self.assertIn("fall", automatic.stderr.lower())
+        self.assertFalse(any("exec" in call["argv"] for call in calls))
+        self.assertIn("catalog", automatic.stderr.lower())
         self.assertNotEqual(explicit.returncode, 0)
 
     def test_refreshed_catalog_failure_reports_bundled_fallback_warning(self) -> None:
@@ -808,7 +805,7 @@ class CliContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("title", result.stderr)
 
-    def test_quick_alias_resolves_astra_medium(self) -> None:
+    def test_quick_alias_resolves_sol_61_medium(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = make_fake_codex(root)
@@ -827,14 +824,14 @@ class CliContractTests(unittest.TestCase):
 
         execution = next(call for call in reversed(calls) if "exec" in call["argv"])
         argv = execution["argv"]
-        self.assertEqual(argv[argv.index("--model") + 1], "gpt-6-astra")
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-6.1-sol")
         self.assertTrue(
             any('model_reasoning_effort="medium"' == value for value in argv)
         )
 
     def test_newer_unverified_binary_warns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            binary = make_fake_codex(Path(tmp), version="0.145.0")
+            binary = make_fake_codex(Path(tmp), version="0.160.0")
             result = run_cli(
                 "--codex-bin",
                 str(binary),
@@ -845,7 +842,7 @@ class CliContractTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("0.145.0", result.stderr)
+        self.assertIn("0.160.0", result.stderr)
         self.assertIn("warning", result.stderr.lower())
 
     def test_large_diff_guard_requires_explicit_override(self) -> None:

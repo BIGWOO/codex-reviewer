@@ -18,7 +18,9 @@ from .catalog import (
     CODEX_BIN_ENV,
     INSTALL_NPM,
     INSTALL_STANDALONE,
+    MIN_CODEX_VERSION,
     CodexBinary,
+    format_version,
 )
 
 
@@ -246,7 +248,7 @@ def prepare_codex_binary(
     force_update: bool = False,
     timeout: int = DEFAULT_UPDATE_TIMEOUT,
 ) -> tuple[CodexBinary, UpdateOutcome]:
-    """Select npm first, otherwise standalone, and periodically update it.
+    """Select the CLI and upgrade missing/unsupported installations by default.
 
     An explicit ``--codex-bin`` or ``CODEX_REVIEWER_CODEX_BIN`` is a lifecycle
     pin: it is honored exactly and never modified automatically.
@@ -258,7 +260,7 @@ def prepare_codex_binary(
     enabled = (
         check_updates
         if check_updates is not None
-        else force_update or _env_enabled()
+        else force_update or not binary.supported or _env_enabled()
     )
     outcome = UpdateOutcome(
         enabled=enabled,
@@ -286,6 +288,7 @@ def prepare_codex_binary(
         binary.path
         and binary.install_method in {INSTALL_NPM, INSTALL_STANDALONE}
         and cache_state
+        and (binary.supported or cache_state[0] == "failed")
     ):
         outcome.cache_hit = True
         outcome.after_version = binary.version_string
@@ -360,7 +363,10 @@ def prepare_codex_binary(
         if result is None or result.returncode != 0:
             outcome.error = f"Codex update check failed: {first_error}"
             outcome.warnings.append(
-                outcome.error + "; continuing with the currently selected CLI"
+                outcome.error + (
+                    "; continuing with the currently selected compatible CLI"
+                    if binary.supported else "; review cannot start until a compatible CLI is installed"
+                )
             )
             cache_error = _write_cache(
                 cache_path, binary, status="failed", error=outcome.error
@@ -378,7 +384,16 @@ def prepare_codex_binary(
             and outcome.after_version is not None
             and outcome.before_version != outcome.after_version
         )
-        cache_error = _write_cache(cache_path, refreshed)
+        if not refreshed.supported or refreshed.error:
+            outcome.error = (
+                f"Codex install/update did not produce stable CLI {format_version(MIN_CODEX_VERSION)}+: "
+                f"{refreshed.version_text or refreshed.error or 'CLI not found'}"
+            )
+            outcome.warnings.append(outcome.error)
+        cache_error = _write_cache(
+            cache_path, refreshed,
+            status="failed" if outcome.error else "ok", error=outcome.error,
+        )
         if cache_error:
             outcome.warnings.append(cache_error)
         return refreshed, outcome

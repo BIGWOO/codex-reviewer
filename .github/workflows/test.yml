@@ -47,7 +47,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   pinned-codex-contract:
-    name: Codex CLI 0.144.1 contract
+    name: Codex CLI 0.159.3 contract
     strategy:
       fail-fast: false
       matrix:
@@ -59,8 +59,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install --global @openai/codex@0.144.1
-      - run: codex --version | grep '0.144.1'
+      - run: npm install --global @openai/codex@0.159.3
+      - run: codex --version | grep '0.159.3'
       - run: codex exec --help > /dev/null
       - run: codex exec --help | grep -- '--json'
       - run: codex exec --help | grep -- '--output-schema'
@@ -74,7 +74,7 @@ jobs:
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |
-          python3 -c 'import json,sys; data=json.load(sys.stdin); models={m["slug"]:m for m in data["models"]}; sol=models["gpt-5.6-sol"]; efforts={r["effort"] for r in sol["supported_reasoning_levels"]}; assert {"high","max","ultra"} <= efforts; assert sol["context_window"] >= 372000'
+          python3 -c 'import json,sys; data=json.load(sys.stdin); models={m["slug"]:m for m in data["models"]}; sol=models["gpt-6.1-sol"]; efforts={r["effort"] for r in sol["supported_reasoning_levels"]}; assert {"medium","high","xhigh","ultra"} <= efforts; assert sol["context_window"] > 0'
       - name: Validate developer Git in read-only sandbox
         if: runner.os == 'macOS'
         shell: bash
@@ -109,4 +109,4 @@ jobs:
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |
-          python3 -c 'import json,sys; data=json.load(sys.stdin); models={m["slug"]:m for m in data["models"]}; sol=models["gpt-5.6-sol"]; assert sol["supported_reasoning_levels"]'
+          python3 -c 'import json,sys; data=json.load(sys.stdin); models={m["slug"]:m for m in data["models"]}; sol=models["gpt-6.1-sol"]; assert sol["supported_reasoning_levels"]'

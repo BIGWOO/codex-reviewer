@@ -58,7 +58,7 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertNotIn(secret, spec.display_command)
 
     def test_native_explicit_model_also_overrides_profile_review_model(self) -> None:
-        for model in ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.5"):
+        for model in ("gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol"):
             builder = CommandBuilder(binary=self.binary, model=model, effort="high", profile="reviewer")
             native = builder.native(ReviewScope("base", "main"))
             self.assertEqual(native.argv[native.argv.index("--model") + 1], model)

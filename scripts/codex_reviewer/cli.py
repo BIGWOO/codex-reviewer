@@ -42,13 +42,13 @@ REVIEW_TYPES = (
 )
 
 
-def _update_policy(args: argparse.Namespace, *, diagnostic: bool = False) -> Optional[bool]:
+def _update_policy(args: argparse.Namespace) -> Optional[bool]:
     if args.dry_run or args.no_update_check:
         return False
     if args.update_check or args.force_update_check:
         return True
-    # Diagnostics require per-run opt-in; normal reviews may use the env opt-in.
-    return False if diagnostic else None
+    # Missing/old CLIs are upgraded by default in both diagnostics and reviews.
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,12 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     update_group.add_argument(
         "--update-check",
         action="store_true",
-        help="Opt into Codex install/update for this run, respecting the update cache.",
+        help="Check for CLI updates even when the minimum version is satisfied, respecting the cache.",
     )
     update_group.add_argument(
         "--no-update-check",
         action="store_true",
-        help="Skip the automatic Codex install/update check for this run.",
+        help="Skip CLI install/update; a missing or below-minimum CLI still fails.",
     )
     update_group.add_argument(
         "--force-update-check",
@@ -543,7 +543,7 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
             cwd=args.cwd,
             strict_config=args.strict_config,
             profile=args.profile,
-            update_check=_update_policy(args, diagnostic=True),
+            update_check=_update_policy(args),
             force_update_check=args.force_update_check,
         )
         return result
