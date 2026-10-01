@@ -13,22 +13,13 @@
 | 圖片或 live search | Generic only |
 | Ultra / subagents | Generic only，且必須明確 opt-in |
 
-已核對 `codex-cli 0.153.3` 原始碼：native review 仍忽略 output schema 與 images，並停用 web search、Collab 與 MultiAgentV2。Native scope 的 `--base`、`--commit`、`--uncommitted`、custom prompt 四者互斥；`--title` 只能搭配 `--commit`。Helper 同時指定 `model` 與 `review_model`，避免設定檔改變實際審查模型。
+已核對 `codex-cli 0.159.3` 原始碼：native review 仍忽略 output schema 與 images，並停用 web search、Collab 與 MultiAgentV2。Native scope 的 `--base`、`--commit`、`--uncommitted`、custom prompt 四者互斥；`--title` 只能搭配 `--commit`。Helper 同時指定 `model` 與 `review_model`，避免設定檔改變實際審查模型。
 
-本機 CLI 0.153.2 已完成參數、模型清單檢查及 Astra standard 的限定範圍審查與問題修正複查；僅驗證此模式的執行流程，不代表所有模式或審查品質已驗收。0.153.3 仍只有原始碼核對，最低 stable CLI 維持 0.144.1。
+最低 stable CLI 為 0.159.3；歷史實際執行與本次驗證的範圍統一記錄於 [README 相容性與保護措施](../README.md#相容性與保護措施)。
 
 ## Presets
 
-| Preset | Selection |
-|---|---|
-| `quick` | Astra medium，fallback Sol → GPT-5.5 medium |
-| `standard` | Astra high，fallback Sol → GPT-5.5 high；預設 |
-| `deep` | Astra xhigh，fallback Sol → GPT-5.5 xhigh |
-| `ultra` | Astra ultra；generic only，無 fallback |
-
-Helper 會用 `codex debug models` 驗證 catalog。`max` 不屬於任何 preset，只能明確指定，且限單一 repo、完整 sizing、最多 15 檔／1200 changed lines；不能搭配 `--allow-large-diff`。不要硬設 API context 上限，也不要依賴 model default。`--quick` 是 `--preset quick` 的 alias。
-
-一般自動 preset 可依序備援並警告；明確指定 `--model` 時不得替換模型。Catalog 完全不可取得時，一般 preset 保留 GPT-5.5 保守備援；ultra 直接失敗。
+模型、推理等級與 `max` 限制統一維護於 [README Presets](../README.md#presets)。預設為 `gpt-6.1-sol` + `high`；helper 以 catalog 驗證能力，明確指定 `--model` 不會換模型。Generic ultra 才明確啟用模型分工，native／bounded 禁止 ultra。
 
 ## Run
 
@@ -72,15 +63,14 @@ Binary 或 auth 不確定時，先跑不呼叫模型的診斷：
 
 ```bash
 python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
-  --no-update-check \
   --result-json /tmp/codex-review-doctor.json
 ```
 
-使用 `--dry-run` 檢查最後命令，絕不安裝／更新 CLI，即使傳入更新旗標。`doctor` 預設只診斷；單次明確傳入 `--update-check` 或 `--force-update-check` 才允許更新。使用 `--codex-bin /absolute/path/codex` 或 `CODEX_REVIEWER_CODEX_BIN` 選定並自行管理固定 binary。需要附加 repo-specific criteria 時用 `--instructions`，不要把 scope 與 prompt 偷混進 native positional argument。
+使用 `--dry-run` 檢查最後命令，不安裝／更新 CLI。`doctor` 與審查預設先修復缺少或低於 `0.159.3` 的 CLI；符合門檻後的定期更新另由旗標或環境設定控制。使用 `--codex-bin /absolute/path/codex` 或 `CODEX_REVIEWER_CODEX_BIN` 選定並自行管理固定 binary；版本不足即失敗。需要附加 repo-specific criteria 時用 `--instructions`，不要把 scope 與 prompt 偷混進 native positional argument。
 
 跨 repo 的 generic review 必須使用 `--scope-manifest <JSON>` 宣告每個 repo 的 `uncommitted`、`base`、`commit` 或 `range` scope。Deep custom review 必須提供 manifest 或 `--review-range`，避免未 sizing 的廣域審查。
 
-預設 `--minimal-context` 會停用 plugins、apps 與 multi-agent，但不代表停用一般 skill discovery 或所有 MCP。Bounded mode 另以 JSONL policy 強制零 command／MCP／web／browser／collaboration tools。只有非 bounded review 確定需要完整 context 時才用 `--full-context`。
+所有 review 都停用 hooks；一般／bounded review 停用 V1、V2 並設定 `agents.enabled=false`，generic ultra 才允許委派，由目前模型／provider 選擇 V1 或 V2，代理並行上限為 2。預設 `--minimal-context` 另停用 plugins／apps；`--full-context` 只恢復 plugins／apps，不改變委派與 hooks 限制，也不代表停用一般 skill discovery 或所有 MCP。Bounded 另停用 Code Mode，並以 JSONL policy 強制零工具。只有非 bounded review 確定需要完整 context 時才用 `--full-context`。
 
 Bounded 啟動前另確認 CLI 能停用命令工具與設定搜尋停用；檔案修改及未知事件均不得判定通過。這是啟動控制加事後偵測，不代表所有工具在發生副作用前都能被攔截。Ctrl+C／SIGTERM 會先清除子程序再釋放鎖，結果為 `interrupted`／`inconclusive`，退出碼分別是 130／143。
 

@@ -25,7 +25,7 @@ description: Independent, read-only Codex CLI second opinions. Use when the user
 | caller 明確指定 Codex 內建審查規則 | `native-review` |
 | 自訂規格、架構或其他條件 | 對應 generic 模式，按需讀操作細節 |
 
-Bounded 禁止 child tools；若內容不足，就列證據缺口，不臆測通過。Native 無法把共用提示加入 Git scope，不宣稱與 generic 相同。模型依 catalog 驗證，保留 `standard`；只有明確要求才升級或啟用額外代理。
+Bounded 禁止 child tools；若內容不足，就列證據缺口，不臆測通過。Native 無法把共用提示加入 Git scope，不宣稱與 generic 相同。所有 preset 固定使用 `gpt-6.1-sol` 並依 catalog 驗證；模型、推理能力或 catalog 不可用即回報原因，不自動換模型。日常使用 `standard`（`high`）；只有明確要求才升級或啟用額外代理。其他有效模型須由 caller 明確指定，已退役模型一律拒絕。
 
 ## 預設審查重點
 
@@ -45,7 +45,9 @@ python3 "$SKILL_DIR/scripts/codex_review.py" bounded-review \
 
 先由 caller 完成必要測試，再將實際結果放進 evidence。需要 packet 格式時讀 [README 的 bounded 範例](README.md#bounded-review-contract)；其他模式、跨 repo、自訂 schema、模型與平台限制見 [操作細節](references/operation-details.md)，只讀所需章節。
 
-CLI 預設只沿用現有相容版本；缺少或過舊時回報，不自動安裝／更新。`doctor` 預設不更新；`--dry-run` 一律不更新。只有已授權 CLI 維護才加 `--update-check`（保留快取）或 `--force-update-check`（忽略快取），詳見 [更新政策](references/codex_cli_reference.md#安裝來源與自動更新)。
+CLI 以 stable `0.159.3` 為最低版本及相容性基準。審查或 `doctor` 啟動前先檢查版本；缺少或過舊時預設依安裝來源安裝／升級並讀回版本，未達門檻就停止。`--dry-run` 不更新；`--no-update-check` 與明確 binary pin 也不更新，但都不能讓舊版執行審查。符合門檻後的定期更新與強制重查見 [更新政策](references/codex_cli_reference.md#安裝來源與自動更新)。
+
+所有 review 停用 hooks；一般／bounded review 同時停用 V1、V2 並設定 `agents.enabled=false`，封住 model catalog 的委派預設。Generic ultra 才允許委派，由目前模型／provider 選擇 V1 或 V2，代理並行上限為 2。Bounded 另停用 Code Mode 並驗證控制開關，仍以 JSONL 強制零工具。`doctor` 預設快速檢查，完整環境診斷用 `--full-diagnostics`；診斷逾時是未完成，不是登入失敗。細節見 [README](README.md#presets) 與 [CLI 診斷](references/codex_cli_reference.md#診斷)。
 
 ## 完成、採納與複查
 

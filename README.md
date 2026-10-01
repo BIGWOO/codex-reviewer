@@ -6,12 +6,12 @@
 
 - Python 3.10+
 - Git
-- 已安裝相容的 Codex CLI；只有明確要求安裝／更新時需要連線至官方 installer 或 npm registry
+- Stable Codex CLI `0.159.3` 以上；缺少或過舊時，預設需要連線至官方 installer 或 npm registry 升級
 - 已完成 Codex CLI 登入，且帳號可使用至少一個支援模型
 
-預設只檢查已安裝 CLI 的相容性，缺少或過舊就回報，不自動 bootstrap。明確啟用更新時才依原安裝來源更新，缺少 CLI 才安裝 standalone。最終版本必須是 `0.144.1` 或更新的 stable version。
+每次審查或 `doctor` 都先確認 stable CLI 至少為 `0.159.3`。缺少或過舊時，預設依原安裝來源升級，缺少 CLI 則安裝 standalone；升級後重新讀取版本，未達門檻就停止。符合門檻即可繼續；定期查詢新版另外由更新旗標或環境設定啟用。
 
-明確啟用的更新只更新 Codex CLI，不會修改被審查 repo，也不會覆寫 `$CODEX_HOME` config。
+升級只處理 Codex CLI，不會修改被審查 repo，也不會覆寫 `$CODEX_HOME` config。
 
 ## Install
 
@@ -27,7 +27,6 @@ git clone https://github.com/BIGWOO/codex-reviewer.git \
 ```bash
 SKILL_DIR="$HOME/.agents/skills/codex-reviewer"
 python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
-  --no-update-check \
   --result-json /tmp/codex-review-doctor.json
 ```
 
@@ -35,9 +34,9 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 
 ### 自動選擇與更新
 
-預設不安裝／更新 CLI。一般審查可用 `--update-check` 單次啟用，或由使用者設定 `CODEX_REVIEWER_AUTO_UPDATE=1`；`--no-update-check` 覆蓋環境設定。`doctor` 需要單次旗標才會更新，`--dry-run` 即使有更新旗標也不更新。
+預設自動修復缺少或低於 `0.159.3` 的 CLI。符合門檻後，可用 `--update-check` 或 `CODEX_REVIEWER_AUTO_UPDATE=1` 啟用定期更新；`CODEX_REVIEWER_AUTO_UPDATE=0` 只停用定期更新，不阻止必要升級。`--no-update-check` 完全停用安裝／更新，`--dry-run` 也不更新；兩者仍要求已安裝版本符合門檻。
 
-啟用更新後保留原有機制：明確 binary pin 永不自動更新；npm 優先且保留來源；否則選 standalone。成功快取 24 小時，失敗退避 15 分鐘，相容的現有 CLI 可帶警告繼續。
+明確 binary pin 由 caller 自行管理，版本不足就停止；npm 優先且保留來源，否則選 standalone。成功快取 24 小時，但不能阻止低於最低版本的必要升級；失敗退避 15 分鐘。只有已達門檻的 CLI 可在定期更新失敗時帶警告繼續。
 
 機器上可能同時存在 npm、Homebrew、App 內嵌或舊版 binary。可用以下命令確認：
 
@@ -63,18 +62,28 @@ python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
 export CODEX_REVIEWER_CODEX_BIN=/absolute/path/to/codex
 ```
 
-`doctor` 不呼叫模型；它檢查 binary version、model catalog、Git 與 reviewer 所需能力。遇到 config 問題時再加 `--strict-config`。`doctor` 預設不更新 CLI，`--dry-run` 一律不更新。診斷仍可能查詢模型清單，不代表完全離線。
+`doctor` 不呼叫模型；預設先確保最低 CLI 版本，再快速檢查設定能否載入、已儲存登入狀態、model catalog、schema、Git 與 read-only Git 能力。登入狀態不保證遠端服務或模型權限可用。遇到 config 問題時再加 `--strict-config`。`--dry-run` 不更新，但診斷仍可能查詢模型清單，不代表完全離線。
+
+完整的網路、代理、防護軟體、桌面與更新診斷另用：
+
+```bash
+python3 "$SKILL_DIR/scripts/codex_review.py" doctor \
+  --full-diagnostics --diagnostic-timeout 90 \
+  --result-json /tmp/codex-review-full-doctor.json
+```
+
+`--diagnostic-timeout` 預設 90 秒，只限制完整診斷；快速登入／設定探測各限 10 秒。完整診斷逾時記為 `full_diagnostics: incomplete`，不覆蓋快速 `auth_config` 結果，也不算診斷成功。完整報告中的 warning 保留為 warning，fail 仍失敗；未啟用完整診斷時明確記為 skip。
 
 更新控制：
 
 ```bash
-# 本次略過使用者環境設定啟用的更新
+# 本次不安裝／更新；版本不足時失敗
 python3 "$SKILL_DIR/scripts/codex_review.py" --no-update-check doctor
 
 # 明確啟用本次安裝／更新，忽略 24 小時快取
 python3 "$SKILL_DIR/scripts/codex_review.py" --force-update-check doctor
 
-# 可選：一般審查啟用更新（doctor 與 dry-run 不繼承此設定）
+# 可選：審查與 doctor 在符合門檻後仍定期查詢新版
 export CODEX_REVIEWER_AUTO_UPDATE=1
 ```
 
@@ -137,7 +146,7 @@ python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
 | 成本 | 每個子代理各自消耗 token | 預設單一 reviewer，成本較可預測 |
 | 適用 | 規格、標準、測試等過程檢查 | 最終差異、正式驗收與可稽核結果 |
 
-兩者可以互補，但不要重複審查相同面向。若主任務已用子代理檢查規格或標準，最後只讓 `$codex-reviewer` 審查最終差異或尚未覆蓋的風險。此 skill 預設啟用 `--minimal-context`，不會在 reviewer 內再次展開子代理。
+兩者可以互補，但不要重複審查相同面向。若主任務已用子代理檢查規格或標準，最後只讓 `$codex-reviewer` 審查最終差異或尚未覆蓋的風險。此 skill 預設啟用 `--minimal-context`，不展開子代理；只有明確選用 generic `ultra` 才啟用模型的自動分工。
 
 ## Modes
 
@@ -150,20 +159,22 @@ python3 "$SKILL_DIR/scripts/codex_review.py" native-review \
 | `security` / `performance` / `architecture` / `quality` | Generic 專項 review |
 | `doctor` | Binary、version、catalog 或 Git diagnostic |
 
-依 0.153.3 原始碼核對，Native review 不會套用 output schema、images 或 live search，也不使用 Ultra subagents。Helper 會對不相容組合 fail fast；需要這些能力時使用 generic mode。
+依 0.159.3 原始碼核對，Native review 不會套用 output schema、images 或 live search，也不使用 Ultra subagents。Helper 會對不相容組合 fail fast；需要這些能力時使用 generic mode。
 
 ## Presets
 
-| Preset | Primary | Fallback | Typical use |
-|---|---|---|---|
-| `quick` | GPT-6 Astra medium | Sol → GPT-5.5 medium | 快速找阻塞問題 |
-| `standard` | GPT-6 Astra high | Sol → GPT-5.5 high | 預設日常 review |
-| `deep` | GPT-6 Astra xhigh | Sol → GPT-5.5 xhigh | 複雜、高價值變更 |
-| `ultra` | GPT-6 Astra ultra | 無 | Generic、可平行拆解的明確 opt-in |
+| Preset | Model / reasoning | Typical use |
+|---|---|---|
+| `quick` | `gpt-6.1-sol` medium | 快速找阻塞問題 |
+| `standard` | `gpt-6.1-sol` high | 預設日常 review |
+| `deep` | `gpt-6.1-sol` xhigh | 複雜、高價值變更 |
+| `ultra` | `gpt-6.1-sol` ultra | Generic、可平行拆解的明確 opt-in |
 
-Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設帳號已開放 Astra。`--quick` 是 `--preset quick` 的 alias。
+Helper 會用 `codex debug models` 驗證模型與 reasoning support，不假設帳號已開放指定模型。`--quick` 是 `--preset quick` 的 alias。
 
-自動選用 Astra 失敗時，一般等級依序備援並警告；明確 `--model` 不會換模型。Catalog 完全不可取得時，一般等級保留 GPT-5.5 保守備援。內建審查同步指定 `review_model`，避免使用者或 profile 設定蓋過選定模型。
+所有 preset 在模型或所需 reasoning 不可用、catalog 完全不可取得時直接回報原因，沒有自動模型備援。其他模型必須明確用 `--model` 選定並通過 catalog 驗證；已退役模型即使被舊 catalog 列出也會拒絕。Catalog 優先刷新，失敗可用 bundled catalog 驗證客戶端能力並警告，但不保證帳號模型權限。內建審查同步指定 `review_model`，避免使用者或 profile 設定蓋過選定模型。
+
+所有 review 都明確停用 hooks。一般 preset 同時停用 `multi_agent`、`multi_agent_v2` 並設定 `agents.enabled=false`，即使使用者／profile 或 model catalog 預設 V2，也禁止委派。Generic `ultra` 才允許委派，由目前模型／provider 選擇 V1 或 V2，代理並行上限為 2；native 與 bounded 禁止 ultra。`--full-context` 不會改變這些限制。
 
 `max` 不屬於 preset。只有明確傳入 `--reasoning-effort max` 才會使用，且必須是完整 sizing 的單一 repo scope，最多 15 個 changed files／1200 changed lines，不能用 `--allow-large-diff` 繞過。
 
@@ -209,8 +220,8 @@ Bounded 固定 bundled schema、`standard` 預設、`--ignore-user-config`、min
 - `--profile <NAME>`：載入 `$CODEX_HOME/<NAME>.config.toml` V2 profile。
 - `--fast`：使用 catalog 提供的 Fast tier；增加 usage，只能 opt-in。
 - `--strict-config`：未知 config field 直接失敗，適合 diagnostic/CI。
-- `--update-check`：明確啟用本次 CLI 安裝／更新，尊重快取。
-- `--no-update-check`：本次停用 CLI 安裝／更新，覆蓋環境設定。
+- `--update-check`：符合最低版本後仍檢查更新，尊重快取。
+- `--no-update-check`：本次停用 CLI 安裝／更新，覆蓋環境設定；版本不足仍失敗。
 - `--force-update-check`：忽略快取，立即依既有安裝來源執行更新。
 - `--result-json <FILE>`：額外寫入精簡的 `schema_version: 2` result envelope；不取代 stdout final text，也不重複 raw JSONL。
 - `--include-events`：明確要求把已遮蔽的 events 放入 `--result-json`；一般情況使用 `--output` 保存 raw JSONL。
@@ -224,7 +235,7 @@ Bounded 固定 bundled schema、`standard` 預設、`--ignore-user-config`、min
 - `--max-jsonl-bytes <N>`：既有模式預設 unlimited；bounded 預設 262144。
 - `--idle-timeout <SECONDS>`：無 stdout/stderr 活動的停滯上限；bounded 預設 `0`（停用），既有模式預設 `180`。
 - `--hard-timeout <SECONDS>`：整次執行的絕對上限；bounded 預設 `600`，既有模式預設 `300`；`--timeout` 保留為相容 hard timeout。
-- `--minimal-context`／`--full-context`：預設停用 plugins、apps、multi-agent，但不代表停用一般 skills 或所有 MCP。
+- `--minimal-context`／`--full-context`：只控制 plugins／apps 載入；預設停用。兩者都停用 hooks，一般 preset 禁止委派，generic ultra 才允許委派；不代表停用一般 skills 或所有 MCP。Bounded 另停用 Code Mode，拒絕任何工具事件。
 - `--ignore-user-config`：忽略 base user config；`--isolated` 另外忽略 rules，兩者用途不同。
 - `--allow-large-diff`：越過一般大型 diff guard；應先拆 task 或 module，且不能用於 `max`。
 
@@ -278,9 +289,11 @@ python3 -m venv "$HOME/.venvs/codex-reviewer"
 
 啟動前確認套件與規則有效，完成後再驗證回覆。未指定 `$schema` 時採 Draft 2020-12；已知版本依宣告驗證，未知版本拒絕。參照只能指向同一份文件，不讀取網路或外部檔案；`format` 保持註記語意，不額外檢查 Email 等格式。格式不符會回報欄位位置，`success=false`；格式通過並不代表品質閘門通過。使用者提供的 schema 若剛好與內建 schema 相同，仍按自訂 schema 處理。
 
-## 本次相容性與保護措施
+## 相容性與保護措施
 
-- 0.153.3：已核對官方原始碼與版本說明；0.153.2：本機參數、模型清單及停用功能檢查。另已用 Astra standard 執行限定範圍審查與針對性複查；最低 stable CLI 仍是 0.144.1，其他模式及 0.153.3 的真實執行尚未驗證。
+- 2026-10-01：本機 CLI 0.159.3 catalog 已確認 `gpt-6.1-sol` 支援所有 preset 的 reasoning 等級；native、structured、bounded、custom 與 ultra 的命令預覽，以及 bounded 九項工具停用開關均通過實機檢查。快速 doctor 完成；完整 doctor 完成並保留本機設定、網路與歷史資料等 warning。這些檢查未執行真實模型審查。
+- JSONL 相容性測試依官方 0.159.3 event schema 建立離線案例，驗證命令啟動失敗、提早輸出、未完成進度、完整 usage 與 bounded 零工具限制；案例不是模型實跑紀錄。
+- 歷史驗證（2026-09-05）：0.153.3 已核對官方原始碼與版本說明；0.153.2 已完成參數、模型清單、停用功能檢查與 Astra standard 限定範圍審查及複查。此紀錄保留舊模型的流程證據，其他模式的真實執行尚未驗證。
 - 輸出路徑與範圍、格式、證據或圖片輸入衝突時，退出且不寫入任何輸出；包含符號連結及硬連結別名。
 - 限定範圍的 Git 差異按檔名字面比對，`[id].tsx` 不會展開成其他檔名。
 - 限定範圍模式額外停用命令工具與搜尋，必要停用功能無法確認時提前失敗。檔案修改及未知輸出事件都會阻止通過；事件偵測不代表副作用發生前的完整攔截。
@@ -303,7 +316,7 @@ python3 -m venv "$HOME/.venvs/codex-reviewer"
 - `SKILL.md`：agent workflow、trigger 與 quality gate
 - `scripts/codex_review.py`：CLI wrapper
 - `scripts/codex_reviewer/updates.py`：npm 優先、standalone bootstrap 與 update cache
-- `references/codex_cli_reference.md`：0.153.3 原始碼能力核對、V2 profile 與診斷
+- `references/codex_cli_reference.md`：0.159.3 原始碼能力核對、V2 profile 與診斷
 - `references/example_prompts.md`：parameterized generic prompts
 - `references/review_output_schema.json`：v2 native-compatible schema
 - `agents/openai.yaml`：Codex UI metadata
