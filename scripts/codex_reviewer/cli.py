@@ -263,13 +263,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--minimal-context",
         dest="minimal_context",
         action="store_true",
-        help="Disable Codex plugins, apps, and multi-agent features for a lean review session.",
+        help="Disable Codex plugins and apps for a lean review session.",
     )
     context_group.add_argument(
         "--full-context",
         dest="minimal_context",
         action="store_false",
-        help="Keep Codex plugins, apps, and multi-agent features available.",
+        help="Keep Codex plugins and apps available; hooks stay disabled and delegation still requires Ultra.",
     )
     parser.set_defaults(minimal_context=True)
     parser.add_argument(

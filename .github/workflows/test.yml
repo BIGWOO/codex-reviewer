@@ -68,9 +68,14 @@ jobs:
       - run: codex exec review --help > /dev/null
       - run: codex update --help > /dev/null
       - run: codex --help | grep -- '--disable'
-      - run: codex features list | grep -E '^apps[[:space:]]'
-      - run: codex features list | grep -E '^multi_agent[[:space:]]'
-      - run: codex features list | grep -E '^plugins[[:space:]]'
+      - name: Validate bounded tool controls without inference
+        shell: bash
+        run: >-
+          codex -c agents.enabled=false
+          --disable shell_tool --disable plugins --disable apps
+          --disable multi_agent --disable multi_agent_v2 --disable hooks
+          --disable code_mode --disable code_mode_only --disable code_mode_host features list |
+          python3 -c 'import sys; states={p[0]:p[-1] for line in sys.stdin if len(p:=line.split())>=3}; required={"shell_tool","plugins","apps","multi_agent","multi_agent_v2","hooks","code_mode","code_mode_only","code_mode_host"}; assert all(states.get(f)=="false" for f in required), states'
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |
@@ -103,9 +108,14 @@ jobs:
       - run: codex exec review --help > /dev/null
       - run: codex update --help > /dev/null
       - run: codex --help | grep -- '--disable'
-      - run: codex features list | grep -E '^apps[[:space:]]'
-      - run: codex features list | grep -E '^multi_agent[[:space:]]'
-      - run: codex features list | grep -E '^plugins[[:space:]]'
+      - name: Validate bounded tool controls without inference
+        shell: bash
+        run: >-
+          codex -c agents.enabled=false
+          --disable shell_tool --disable plugins --disable apps
+          --disable multi_agent --disable multi_agent_v2 --disable hooks
+          --disable code_mode --disable code_mode_only --disable code_mode_host features list |
+          python3 -c 'import sys; states={p[0]:p[-1] for line in sys.stdin if len(p:=line.split())>=3}; required={"shell_tool","plugins","apps","multi_agent","multi_agent_v2","hooks","code_mode","code_mode_only","code_mode_host"}; assert all(states.get(f)=="false" for f in required), states'
       - name: Validate bundled model catalog
         run: >-
           codex debug models --bundled |

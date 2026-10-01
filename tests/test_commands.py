@@ -28,12 +28,9 @@ class CommandBuilderTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def builder(self, **kwargs) -> CommandBuilder:  # type: ignore[no-untyped-def]
-        return CommandBuilder(
-            binary=self.binary,
-            model="gpt-5.6-sol",
-            effort="high",
-            **kwargs,
-        )
+        options = {"binary": self.binary, "model": "gpt-5.6-sol", "effort": "high"}
+        options.update(kwargs)
+        return CommandBuilder(**options)
 
     def test_native_scope_argv_is_read_only_ephemeral_and_promptless(self) -> None:
         spec = self.builder().native(ReviewScope("base", "main"))
@@ -81,6 +78,32 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertEqual(spec.stdin_payload, "generic secret criteria")
         self.assertNotIn("generic secret criteria", spec.display_command)
 
+    def test_ultra_explicitly_enables_delegation_without_enabling_plugins_or_apps(self) -> None:
+        for minimal_context in (True, False):
+            with self.subTest(minimal_context=minimal_context):
+                argv = list(self.builder(effort="ultra", minimal_context=minimal_context).generic("review").argv)
+                enabled = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--enable"]
+                disabled = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--disable"]
+                self.assertIn("multi_agent", enabled)
+                self.assertNotIn("multi_agent", disabled)
+                self.assertNotIn("multi_agent_v2", enabled)
+                self.assertIn("multi_agent_v2", disabled)
+                self.assertIn("hooks", disabled)
+                self.assertIn("agents.enabled=true", argv)
+                self.assertIn("agents.max_concurrent_threads_per_session=2", argv)
+                if minimal_context:
+                    self.assertIn("plugins", disabled)
+                    self.assertIn("apps", disabled)
+
+    def test_no_tools_cannot_enable_ultra_delegation(self) -> None:
+        argv = list(self.builder(effort="ultra", no_tools=True).generic("review").argv)
+        enabled = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--enable"]
+        disabled = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--disable"]
+        self.assertNotIn("multi_agent", enabled)
+        self.assertIn("multi_agent", disabled)
+        self.assertIn("multi_agent_v2", disabled)
+        self.assertIn("agents.enabled=false", argv)
+
     def test_profile_fast_context_and_strict_config_are_explicit(self) -> None:
         spec = self.builder(
             profile="review-v2",
@@ -113,10 +136,20 @@ class CommandBuilderTests(unittest.TestCase):
         minimal = list(self.builder().generic("review").argv)
         full = list(self.builder(minimal_context=False).generic("review").argv)
 
-        for feature in ("plugins", "apps", "multi_agent"):
+        for feature in ("plugins", "apps"):
             self.assertIn(feature, minimal)
             self.assertNotIn(feature, full)
-        self.assertEqual(minimal.count("--disable"), 3)
+        for argv in (minimal, full):
+            for feature in ("hooks", "multi_agent", "multi_agent_v2"):
+                self.assertIn(feature, argv)
+            self.assertIn("agents.enabled=false", argv)
+
+    def test_bounded_controls_disable_code_mode_even_without_minimal_context(self) -> None:
+        argv = list(self.builder(no_tools=True, minimal_context=False).generic("review").argv)
+        disabled = {argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--disable"}
+        self.assertTrue({"shell_tool", "plugins", "apps", "hooks", "multi_agent", "multi_agent_v2", "code_mode", "code_mode_only", "code_mode_host"} <= disabled)
+        self.assertIn('web_search="disabled"', argv)
+
 
 
 if __name__ == "__main__":

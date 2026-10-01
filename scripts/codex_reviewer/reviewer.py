@@ -23,7 +23,7 @@ from .catalog import (
     format_version,
     resolve_model_selection,
 )
-from .commands import CommandBuilder, CommandSpec
+from .commands import BOUNDED_DISABLED_FEATURES, CommandBuilder, CommandSpec
 from .gate import derive_bundled_gate
 from .result import ReviewResult
 from .runner import CodexProcessRunner
@@ -856,6 +856,10 @@ class CodexReviewer:
         self.schema_file = original_schema
         if preparation_error:
             return attach_packet_metadata(preparation_error)
+        if self.selection is not None and self.selection.effort == "ultra":
+            return attach_packet_metadata(
+                self._failure("bounded", "Bounded review forbids Ultra delegation; use standard or deep")
+            )
         control_error = self._bounded_control_error()
         if control_error:
             return attach_packet_metadata(self._failure("bounded", control_error))
@@ -881,8 +885,8 @@ class CodexReviewer:
 
     def _bounded_control_error(self) -> Optional[str]:
         """Check feature controls without starting a model or modifying config."""
-        required = ("shell_tool", "plugins", "apps", "multi_agent")
-        command = [self.binary.path, "--config", 'web_search="disabled"']
+        required = BOUNDED_DISABLED_FEATURES
+        command = [self.binary.path, "--config", 'web_search="disabled"', "--config", "agents.enabled=false"]
         for feature in required:
             command.extend(["--disable", feature])
         command.extend(["features", "list"])

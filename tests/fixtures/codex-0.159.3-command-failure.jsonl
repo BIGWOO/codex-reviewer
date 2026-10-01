@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"contract-failure"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"command-1","type":"command_execution","command":"missing-review-tool --read-only","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"command-1","type":"command_execution","command":"missing-review-tool --read-only","aggregated_output":"early output retained\nprocess could not be launched","exit_code":null,"status":"failed"}}
+{"type":"item.completed","item":{"id":"progress-1","type":"agent_message","text":"Partial diagnosis; review is unfinished."}}
+{"type":"turn.failed","error":{"message":"Review could not complete after command launch failure"}}

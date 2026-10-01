@@ -11,6 +11,13 @@ from .catalog import CodexBinary
 from .scope import ReviewScope, developer_git_environment
 
 
+# These controls must be used by both command construction and bounded preflight.
+BOUNDED_DISABLED_FEATURES = (
+    "shell_tool", "plugins", "apps", "multi_agent", "multi_agent_v2", "hooks",
+    "code_mode", "code_mode_only", "code_mode_host",
+)
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     """Everything needed to execute and safely display one Codex command."""
@@ -125,19 +132,26 @@ class CommandBuilder:
         ]
         if self.service_tier:
             argv.extend(["--config", f"service_tier={json.dumps(self.service_tier)}"])
+        disabled = {"hooks", "multi_agent_v2"}
         if self.no_tools:
-            argv.extend(["--disable", "shell_tool", "--config", 'web_search="disabled"'])
+            disabled.update(BOUNDED_DISABLED_FEATURES)
+            argv.extend(["--config", 'web_search="disabled"'])
         if self.minimal_context:
-            argv.extend(
-                [
-                    "--disable",
-                    "plugins",
-                    "--disable",
-                    "apps",
-                    "--disable",
-                    "multi_agent",
-                ]
-            )
+            disabled.update(("plugins", "apps"))
+        if self.effort == "ultra" and not self.no_tools:
+            # Let the active model/provider choose V1 or V2; do not force V2
+            # for providers whose catalog deliberately selects V1.
+            argv.extend([
+                "--enable", "multi_agent",
+                "--config", "agents.enabled=true",
+                "--config", "agents.max_concurrent_threads_per_session=2",
+            ])
+        else:
+            disabled.add("multi_agent")
+            # Model metadata can select V2 even when its feature override is off.
+            argv.extend(["--config", "agents.enabled=false"])
+        for feature in sorted(disabled):
+            argv.extend(["--disable", feature])
         if self.context_window is not None:
             argv.extend(["--config", f"model_context_window={self.context_window}"])
         if self.auto_compact_token_limit is not None:

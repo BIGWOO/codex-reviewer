@@ -83,6 +83,45 @@ class JsonlHelpersTests(unittest.TestCase):
 
 
 class ProcessRunnerTests(unittest.TestCase):
+    def test_cli_1593_event_contract_preserves_errors_usage_and_bounded_guard(self) -> None:
+        # Offline examples use the official rust-v0.159.3 exec_events.rs schema;
+        # they are not transcripts from paid model inference.
+        fixtures = Path(__file__).parent / "fixtures"
+        cases = (
+            ("command-failure", "generic", None, 7),
+            ("command-failure", "bounded", 0, 0),
+            ("completed", "bounded", 0, 0),
+        )
+        for fixture, mode, tool_limit, exit_code in cases:
+            with self.subTest(fixture=fixture, mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                fake = make_fake_codex(root)
+                raw_path = root / "events.jsonl"
+                runner = CodexProcessRunner(
+                    CodexBinary.discover(str(fake)), timeout=5, output_file=str(raw_path),
+                    max_tool_calls=tool_limit,
+                    env={**os.environ, "FAKE_CODEX_JSONL_FILE": str(fixtures / f"codex-0.159.3-{fixture}.jsonl"), "FAKE_CODEX_EXIT": str(exit_code)},
+                )
+                result = runner.run(
+                    [str(fake), "exec", "--json", "-"], stdin_payload="review",
+                    mode=mode, scope={"kind": "custom"}, model="gpt-6.1-sol",
+                    effort="high", service_tier=None,
+                )
+                raw = raw_path.read_text(encoding="utf-8")
+            if fixture == "completed":
+                self.assertTrue(result["success"], result.get("error"))
+                self.assertEqual(result["usage"]["cache_write_input_tokens"], 12)
+                self.assertEqual(result["usage"]["reasoning_output_tokens"], 10)
+            else:
+                self.assertFalse(result["success"])
+                self.assertIsNone(result["final_result"])
+                if mode == "bounded":
+                    self.assertIsNotNone(result["policy_violation"])
+                else:
+                    self.assertIn("command launch failure", result["error"])
+                    self.assertIn("early output retained", raw)
+                    self.assertIn("Partial diagnosis", result["partial_progress"])
+
     def test_skill_budget_item_is_warning_not_terminal_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

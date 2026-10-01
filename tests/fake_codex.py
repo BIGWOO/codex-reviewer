@@ -161,7 +161,7 @@ def main() -> int:
         _append_log(None)
         if os.environ.get("FAKE_CODEX_UNSUPPORTED_CONTROLS"):
             return 2
-        for feature in ("shell_tool", "plugins", "apps", "multi_agent"):
+        for feature in ("shell_tool", "plugins", "apps", "multi_agent", "multi_agent_v2", "hooks", "code_mode", "code_mode_only", "code_mode_host"):
             print(f"{feature} stable false")
         return 0
 
@@ -213,6 +213,9 @@ def main() -> int:
         output_index = args.index("--output-last-message") + 1
         if output_index < len(args):
             Path(args[output_index]).write_text(final_message, encoding="utf-8")
+    if "--json" in args and os.environ.get("FAKE_CODEX_JSONL_FILE"):
+        print(Path(os.environ["FAKE_CODEX_JSONL_FILE"]).read_text(encoding="utf-8"), end="", flush=True)
+        return exit_code
     if "--json" in args:
         events = [
             {"type": "thread.started", "thread_id": "fake-thread"},

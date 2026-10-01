@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.helpers import git, init_git_fixture, make_fake_codex, read_fake_log, run_cli
 
@@ -18,6 +19,7 @@ from codex_reviewer.bounded import (  # noqa: E402
     BoundedScopeError,
     build_bounded_packet,
 )
+from codex_reviewer.reviewer import CodexReviewer  # noqa: E402
 
 
 def write_json(path: Path, payload: object) -> Path:
@@ -26,6 +28,28 @@ def write_json(path: Path, payload: object) -> Path:
 
 
 class BoundedPacketTests(unittest.TestCase):
+    def test_python_api_rejects_ultra_before_model_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = init_git_fixture(root / "repo")
+            packet = build_bounded_packet(
+                str(repo),
+                {
+                    "version": 1,
+                    "kind": "commit_snapshot",
+                    "commit": "HEAD",
+                    "files": [{"path": "app.py", "ranges": [{"start": 1, "end": 2}]}],
+                },
+            )
+            binary = make_fake_codex(root)
+            log = root / "calls.json"
+            with mock.patch.dict(os.environ, {"FAKE_CODEX_LOG": str(log)}):
+                reviewer = CodexReviewer(codex_bin=str(binary), cwd=str(repo), preset="ultra")
+                result = reviewer.bounded_review(packet)
+            self.assertFalse(result["success"])
+            self.assertIn("forbids Ultra", result["error"])
+            self.assertFalse(any("exec" in call["argv"] for call in read_fake_log(log)))
+
     def test_commit_snapshot_contains_only_requested_inclusive_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = init_git_fixture(Path(tmp) / "repo")
