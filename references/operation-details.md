@@ -15,7 +15,7 @@
 
 已核對 `codex-cli 0.159.3` 原始碼：native review 仍忽略 output schema 與 images，並停用 web search、Collab 與 MultiAgentV2。Native scope 的 `--base`、`--commit`、`--uncommitted`、custom prompt 四者互斥；`--title` 只能搭配 `--commit`。Helper 同時指定 `model` 與 `review_model`，避免設定檔改變實際審查模型。
 
-最低 stable CLI 為 0.159.3；歷史實際執行與本次驗證的範圍統一記錄於 [README 相容性與保護措施](../README.md#相容性與保護措施)。
+最低 stable CLI 為 0.159.3；歷史實際執行與本次驗證的範圍統一記錄於 [使用手冊：相容性與保護措施](usage-guide.md#相容性與保護措施)。
 
 ## Presets
 
@@ -76,7 +76,7 @@ Bounded 啟動前另確認 CLI 能停用命令工具與設定搜尋停用；檔�
 
 自訂 `--schema` 需在使用者選定的 Python 環境安裝 `requirements-schema.txt`；不得在執行中自動安裝。缺套件、規則無效或外部參照都要在模型啟動前失敗；回覆需通過本機格式驗證。內建 schema 保持零額外依賴。輸出路徑與輸入衝突時不得寫入任何結果檔。
 
-Windows 使用 UTF-8、原生檔案鎖與 Job Object 程序管理；納管失敗不得繞過控制重試。Windows 檔案沿用目錄存取權限，不以 `chmod` 宣稱私人權限。Ctrl+Break 視為取消；強制結束時不保證有結果檔。Windows 驗證狀態與無模型測試方式見 [README](../README.md#windows-執行相容性)，macOS 測試不代表 Windows 實機通過。
+Windows 使用 UTF-8、原生檔案鎖與 Job Object 程序管理；納管失敗不得繞過控制重試。Windows 檔案沿用目錄存取權限，不以 `chmod` 宣稱私人權限。Ctrl+Break 視為取消；強制結束時不保證有結果檔。Windows 驗證狀態與無模型測試方式見 [使用手冊](usage-guide.md#windows-執行相容性)，macOS 測試不代表 Windows 實機通過。
 
 `--ignore-user-config` 只忽略 base user config，仍保留 project rules；`--isolated` 則等同 `--ignore-user-config --ignore-rules`，兩者都不保證停用 skill discovery。Bounded mode固定使用 `--ignore-user-config` 並拒絕 `--isolated`。
 

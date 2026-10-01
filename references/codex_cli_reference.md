@@ -2,7 +2,7 @@
 
 本文件以 `codex-cli 0.159.3` 官方原始碼核對為基準，整理 reviewer 所需的模型、命令與已知邊界。執行前仍要以本機 `codex --version`、`codex exec review --help` 與 `codex debug models` 為準。
 
-最低版本為 0.159.3。歷史實際執行與本次驗證的範圍見 [README 相容性與保護措施](../README.md#相容性與保護措施)；程式保留保守的版本提示，不把單一模式的執行或原始碼核對視為全面驗收。
+最低版本為 0.159.3。歷史實際執行與本次驗證的範圍見 [使用手冊：相容性與保護措施](usage-guide.md#相容性與保護措施)；程式保留保守的版本提示，不把單一模式的執行或原始碼核對視為全面驗收。
 
 ## 目錄
 
@@ -220,7 +220,7 @@ Helper 的 `--result-json <FILE>` 另外寫入精簡的 v2 execution envelope，
 
 `--enforce-gate` 的 exit contract：`passed`／`passed_with_warnings` 為 0、`blocked` 為 2、執行失敗／`inconclusive`／`not_evaluated` 為 1。P0–P2 都會 block；只有 P3 是 warning。取消例外：Ctrl+C 為 130、SIGTERM 為 143，結果為 `interrupted`／`inconclusive`。
 
-自訂 `--schema` 需選填 `requirements-schema.txt`，以本機 jsonschema 驗證規則及結果；內建格式維持既有零依賴驗證。缺套件、未知格式版本及外部參照在推理前失敗，格式錯誤只回報欄位位置。安裝方式見 README。
+自訂 `--schema` 需選填 `requirements-schema.txt`，以本機 jsonschema 驗證規則及結果；內建格式維持既有零依賴驗證。缺套件、未知格式版本及外部參照在推理前失敗，格式錯誤只回報欄位位置。安裝方式見[使用手冊](usage-guide.md#自訂格式與驗證依賴)。
 
 ## V2 profile
 
