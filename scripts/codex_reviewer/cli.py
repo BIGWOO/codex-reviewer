@@ -12,6 +12,7 @@ from typing import Dict, Mapping, Optional, Sequence
 from .compat import restrict_file_permissions, configure_console
 from .bounded import BoundedScopeError, build_bounded_packet, load_json_object
 from .catalog import DEFAULT_PRESET, PRESET_NAMES
+from .diagnostics import DEFAULT_DIAGNOSTIC_TIMEOUT
 from .gate import gate_exit_code
 from .result import error_result
 from .reviewer import (
@@ -108,6 +109,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict-config",
         action="store_true",
         help="Reject unknown Codex config fields.",
+    )
+    parser.add_argument(
+        "--full-diagnostics", action="store_true",
+        help="Doctor only: also run full Codex environment diagnostics.",
+    )
+    parser.add_argument(
+        "--diagnostic-timeout", type=int, default=None,
+        help=f"Doctor only: full diagnostic deadline in seconds (default: {DEFAULT_DIAGNOSTIC_TIMEOUT}).",
     )
     parser.add_argument(
         "--fast",
@@ -502,6 +511,12 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
     output_error = _validate_output_paths(args)
     if output_error:
         return _error(args.review_type, output_error)
+    if args.review_type != "doctor" and (args.full_diagnostics or args.diagnostic_timeout is not None):
+        return _error(args.review_type, "--full-diagnostics and --diagnostic-timeout are doctor-only options")
+    if args.diagnostic_timeout is not None and args.diagnostic_timeout <= 0:
+        return _error(args.review_type, "--diagnostic-timeout must be positive")
+    if args.diagnostic_timeout is not None and not args.full_diagnostics:
+        return _error(args.review_type, "--diagnostic-timeout requires --full-diagnostics")
     if args.quick and args.preset and args.preset != "quick":
         return _error(
             args.review_type, "--quick cannot be combined with a non-quick --preset"
@@ -545,6 +560,8 @@ def run_from_args(args: argparse.Namespace) -> Dict[str, object]:
             profile=args.profile,
             update_check=_update_policy(args),
             force_update_check=args.force_update_check,
+            full_diagnostics=args.full_diagnostics,
+            diagnostic_timeout=args.diagnostic_timeout or DEFAULT_DIAGNOSTIC_TIMEOUT,
         )
         return result
 

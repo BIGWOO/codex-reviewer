@@ -147,12 +147,18 @@ def main() -> int:
         print(json.dumps(_catalog(bundled)))
         return 0
 
+    if "login" in args and "status" in args:
+        _append_log(None)
+        print(os.environ.get("FAKE_CODEX_LOGIN_OUTPUT", "Logged in using ChatGPT"), file=sys.stderr)
+        return int(os.environ.get("FAKE_CODEX_LOGIN_EXIT", "0"))
+
     if "doctor" in args:
         _append_log(None)
+        time.sleep(float(os.environ.get("FAKE_CODEX_DOCTOR_SLEEP", "0")))
         print(
             os.environ.get(
                 "FAKE_CODEX_DOCTOR_OUTPUT",
-                json.dumps({"status": "healthy", "auth": "ok", "config": "ok"}),
+                json.dumps({"schemaVersion": 1, "overallStatus": "ok", "checks": {"auth.credentials": {"status": "ok", "summary": "healthy"}, "config.load": {"status": "ok", "summary": "healthy"}}}),
             )
         )
         return 0
@@ -163,7 +169,7 @@ def main() -> int:
             return 2
         for feature in ("shell_tool", "plugins", "apps", "multi_agent", "multi_agent_v2", "hooks", "code_mode", "code_mode_only", "code_mode_host"):
             print(f"{feature} stable false")
-        return 0
+        return int(os.environ.get("FAKE_CODEX_CONFIG_EXIT", "0"))
 
     stdin_payload = (
         None

@@ -462,7 +462,10 @@ class CliContractTests(unittest.TestCase):
             envelope = json.loads(result_path.read_text(encoding="utf-8"))
 
         self.assertFalse(any("exec" in call["argv"] for call in calls))
-        self.assertTrue(any("doctor" in call["argv"] for call in calls))
+        self.assertFalse(any("doctor" in call["argv"] for call in calls))
+        self.assertTrue(any("login" in call["argv"] and "status" in call["argv"] for call in calls))
+        full = next(check for check in envelope["diagnostics"] if check["name"] == "full_diagnostics")
+        self.assertEqual(full["status"], "skip")
         self.assertEqual(envelope["schema_version"], 2)
         check_names = {check["name"] for check in envelope["diagnostics"]}
         self.assertTrue(
@@ -479,7 +482,7 @@ class CliContractTests(unittest.TestCase):
             <= check_names
         )
 
-    def test_doctor_auth_config_detail_separates_source_overall_status(self) -> None:
+    def test_full_diagnostics_failure_does_not_mislabel_auth_config(self) -> None:
         doctor_output = {
             "overallStatus": "fail",
             "checks": {
@@ -502,17 +505,20 @@ class CliContractTests(unittest.TestCase):
                 "--result-json",
                 str(result_path),
                 "doctor",
+                "--full-diagnostics",
                 env={"FAKE_CODEX_DOCTOR_OUTPUT": json.dumps(doctor_output)},
             )
             envelope = json.loads(result_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(result.returncode, 0)
         auth = next(
             check for check in envelope["diagnostics"] if check["name"] == "auth_config"
         )
         self.assertEqual(auth["status"], "pass")
-        self.assertEqual(auth["detail"]["review_health_status"], "pass")
-        self.assertEqual(auth["detail"]["source_overall_status"], "fail")
+        self.assertEqual(auth["detail"]["credentials"]["status"], "pass")
+        full = next(check for check in envelope["diagnostics"] if check["name"] == "full_diagnostics")
+        self.assertEqual(full["status"], "fail")
+        self.assertEqual(full["detail"]["source_overall_status"], "fail")
 
     def test_output_paths_must_be_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1106,6 +1112,7 @@ class CliContractTests(unittest.TestCase):
                 "--codex-bin",
                 str(binary),
                 "doctor",
+                "--full-diagnostics",
                 env={"FAKE_CODEX_DOCTOR_OUTPUT": "not-json"},
             )
             nonrepo = root / "not-a-repo"
@@ -1118,7 +1125,7 @@ class CliContractTests(unittest.TestCase):
             )
 
         self.assertNotEqual(malformed.returncode, 0)
-        self.assertIn("auth_config", malformed.stderr)
+        self.assertIn("full_diagnostics", malformed.stderr)
         self.assertEqual(healthy.returncode, 0, healthy.stderr)
 
 

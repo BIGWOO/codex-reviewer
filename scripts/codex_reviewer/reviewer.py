@@ -24,8 +24,9 @@ from .catalog import (
     resolve_model_selection,
 )
 from .commands import BOUNDED_DISABLED_FEATURES, CommandBuilder, CommandSpec
+from .diagnostics import DEFAULT_DIAGNOSTIC_TIMEOUT, cli_health_checks
 from .gate import derive_bundled_gate
-from .result import ReviewResult
+from .result import ReviewResult, error_result
 from .runner import CodexProcessRunner
 from .scope import (
     DiffMetrics,
@@ -1010,8 +1011,12 @@ def run_doctor(
     profile: Optional[str] = None,
     update_check: Optional[bool] = None,
     force_update_check: bool = False,
+    full_diagnostics: bool = False,
+    diagnostic_timeout: int = DEFAULT_DIAGNOSTIC_TIMEOUT,
 ) -> Dict[str, object]:
     """Run explicit, non-inference health checks with the same selected binary."""
+    if diagnostic_timeout <= 0:
+        return error_result("doctor", "--diagnostic-timeout must be positive")
     binary, update_outcome = prepare_codex_binary(
         codex_bin,
         check_updates=update_check,
@@ -1076,79 +1081,10 @@ def run_doctor(
 
     catalog = ModelCatalog(error="binary unavailable", source="unavailable")
     if binary.path and binary.supported:
-        doctor_cmd = [binary.path]
-        if profile:
-            doctor_cmd.extend(["--profile", profile])
-        if strict_config:
-            doctor_cmd.append("--strict-config")
-        doctor_cmd.extend(["doctor", "--json"])
-        try:
-            result = subprocess.run(
-                doctor_cmd,
-                capture_output=True,
-                text=True, encoding="utf-8",
-                timeout=30,
-                check=False,
-            )
-            detail: object
-            try:
-                doctor_payload = (
-                    json.loads(result.stdout) if result.stdout.strip() else None
-                )
-            except json.JSONDecodeError:
-                doctor_payload = None
-            if isinstance(doctor_payload, Mapping) and isinstance(
-                doctor_payload.get("checks"), Mapping
-            ):
-                raw_checks = doctor_payload["checks"]
-                relevant_ids = (
-                    "auth.credentials",
-                    "config.load",
-                    "installation",
-                    "runtime.provenance",
-                )
-                relevant = {
-                    check_id: {
-                        "status": raw_checks[check_id].get("status"),
-                        "summary": raw_checks[check_id].get("summary"),
-                    }
-                    for check_id in relevant_ids
-                    if isinstance(raw_checks.get(check_id), Mapping)
-                }
-                relevant_failed = [
-                    check_id
-                    for check_id, item in relevant.items()
-                    if item.get("status") not in {"ok", "pass"}
-                ]
-                review_health_status = (
-                    "fail" if relevant_failed or not relevant else "pass"
-                )
-                detail = {
-                    "review_health_status": review_health_status,
-                    "source_overall_status": doctor_payload.get("overallStatus"),
-                    "relevant_checks": relevant,
-                }
-                add(
-                    "auth_config",
-                    review_health_status,
-                    detail,
-                )
-                if result.returncode != 0 and not relevant_failed:
-                    warnings.append(
-                        "codex doctor reported an unrelated non-review failure; auth/config checks are healthy"
-                    )
-            elif (
-                isinstance(doctor_payload, Mapping)
-                and doctor_payload.get("status") == "healthy"
-                and doctor_payload.get("auth") == "ok"
-                and doctor_payload.get("config") == "ok"
-            ):
-                add("auth_config", "pass", dict(doctor_payload))
-            else:
-                detail = result.stdout.strip() or result.stderr.strip() or {}
-                add("auth_config", "fail", detail or "Unparseable codex doctor output")
-        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
-            add("auth_config", "fail", str(exc))
+        checks.extend(cli_health_checks(
+            binary, profile=profile, strict_config=strict_config,
+            full_diagnostics=full_diagnostics, diagnostic_timeout=diagnostic_timeout,
+        ))
 
         catalog, catalog_warnings = load_catalog(binary)
         warnings.extend(catalog_warnings)
@@ -1285,6 +1221,7 @@ def run_doctor(
         temporary_repo.cleanup()
 
     failed = [check for check in checks if check["status"] == "fail"]
+    incomplete = [check for check in checks if check["status"] == "incomplete"]
     rows = []
     for check in checks:
         rendered = json.dumps(check["detail"], ensure_ascii=False, sort_keys=True)
@@ -1293,14 +1230,19 @@ def run_doctor(
         rows.append(f"[{str(check['status']).upper()}] {check['name']}: {rendered}")
     final = "Codex Reviewer doctor\n" + "\n".join(rows)
     result = ReviewResult(
-        success=not failed,
+        success=not failed and not incomplete,
         mode="doctor",
         binary=binary.path,
         version=binary.version_string,
         scope={"kind": "doctor", "cwd": root},
         warnings=list(dict.fromkeys(warnings)),
         final=final,
-        error=f"Doctor found {len(failed)} failing checks" if failed else None,
+        error=(
+            f"Doctor found {len(failed)} failing checks and {len(incomplete)} incomplete checks"
+            if failed or incomplete else None
+        ),
+        timed_out=bool(incomplete),
+        execution_status="timed_out" if incomplete else None,
     ).to_dict()
     result["install_method"] = binary.install_method
     result["update"] = update_outcome.to_dict()
